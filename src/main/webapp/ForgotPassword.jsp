@@ -3,6 +3,7 @@
 <%@page import="java.sql.PreparedStatement"%>
 <%@page import="java.sql.ResultSet"%>
 <%@page import="java.sql.Connection"%>
+<%@page import="org.apache.taglibs.standard.functions.Functions"%>
 <%@ include file="header.jsp" %>
      <script type="text/javascript">  
               $(document).ready(function(){  
@@ -44,7 +45,8 @@ if(request.getParameter("secret")!=null)
                   stmt.setString(2, request.getParameter("secret"));
                   rs=stmt.executeQuery();
                   if(rs != null && rs.next()){
-                      out.print("Hello "+rs.getString("username")+", <b class='success'> Your Password is: "+rs.getString("password"));
+                      // HTML-encode stored data before rendering to prevent Stored XSS (CWE-79)
+                      out.print("Hello " + Functions.escapeXml(rs.getString("username")) + ", <b class='success'> Your Password is: " + Functions.escapeXml(rs.getString("password")));
                   }
                   else
                   {
