@@ -7,12 +7,13 @@
 <%@page import="java.sql.ResultSet"%>
 <%@ page import="java.util.*,java.io.*"%>
 <%@ page import="org.cysecurity.cspf.jvl.model.DBConnect"%>
+<%@page import="org.apache.taglibs.standard.functions.Functions"%>
 
 <%
 if(session.getAttribute("isLoggedIn")!=null)
 {
  Connection con=new DBConnect().connect(getServletContext().getRealPath("/WEB-INF/config.properties"));
-         
+
    String id=request.getParameter("id");
    if(id!=null && !id.equals(""))
    {
@@ -23,9 +24,10 @@ if(session.getAttribute("isLoggedIn")!=null)
              rs=stmt.executeQuery();
               if(rs != null && rs.next())
               {
-                out.print("UserName : "+rs.getString("username")+"<br>");
-                out.print("Email : "+rs.getString("email")+"<br>");
-                out.print("About : "+rs.getString("about")+"<br>");
+                // HTML-encode stored data before rendering to prevent Stored XSS (CWE-79)
+                out.print("UserName : " + Functions.escapeXml(rs.getString("username")) + "<br>");
+                out.print("Email : " + Functions.escapeXml(rs.getString("email")) + "<br>");
+                out.print("About : " + Functions.escapeXml(rs.getString("about")) + "<br>");
 
                 //Getting Card Details:
                 PreparedStatement stmt1 = con.prepareStatement("select * from cards where id=?");
@@ -34,9 +36,9 @@ if(session.getAttribute("isLoggedIn")!=null)
                  if(rs1 != null && rs1.next())
                 {
                    out.print("<br/>-------------------<br/>Card Details:<br/>-------------------<br/>");
-                   out.print("Card Number: "+rs1.getString("cardno")+"<br/>");
-                   out.print("CVV: "+rs1.getString("cvv")+"<br/>");
-                   out.print("Expiry Date: "+rs1.getString("expirydate")+"<br/>");
+                   out.print("Card Number: " + Functions.escapeXml(rs1.getString("cardno")) + "<br/>");
+                   out.print("CVV: " + Functions.escapeXml(rs1.getString("cvv")) + "<br/>");
+                   out.print("Expiry Date: " + Functions.escapeXml(rs1.getString("expirydate")) + "<br/>");
                 }
                  else
                  {
