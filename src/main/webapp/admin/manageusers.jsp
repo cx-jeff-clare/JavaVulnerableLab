@@ -1,5 +1,5 @@
  <%@ include file="/header.jsp" %>
-  <%@page import="java.sql.Statement"%>
+  <%@page import="java.sql.PreparedStatement"%>
 <%@page import="java.sql.ResultSet"%>
 <%@page import="java.sql.SQLException"%>
 <%@page import="org.cysecurity.cspf.jvl.model.DBConnect"%>
@@ -7,16 +7,19 @@
 
  <%
    Connection con=new DBConnect().connect(getServletContext().getRealPath("/WEB-INF/config.properties"));
-    Statement stmt = con.createStatement(); 
  if(request.getParameter("delete")!=null)
  {
-     String user=request.getParameter("user");      
-     stmt.executeUpdate("Delete from users where username='"+user+"'");                      
+     String user=request.getParameter("user");
+     // Use PreparedStatement to prevent SQL injection
+     PreparedStatement delStmt = con.prepareStatement("Delete from users where username=?");
+     delStmt.setString(1, user);
+     delStmt.executeUpdate();
  }
- %>	
-<form action="manageusers.jsp" method="POST">	
+ %>
+<form action="manageusers.jsp" method="POST">
 <%
- ResultSet rs=stmt.executeQuery("select * from users where privilege='user'");
+ PreparedStatement listStmt = con.prepareStatement("select * from users where privilege='user'");
+ ResultSet rs=listStmt.executeQuery();
  while(rs.next())
  {
      out.print("<input type='radio' name='user' value='"+rs.getString("username")+"'/> "+rs.getString("username")+"<br/>");
