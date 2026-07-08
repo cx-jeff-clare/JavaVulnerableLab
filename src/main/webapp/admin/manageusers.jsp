@@ -4,6 +4,7 @@
 <%@page import="java.sql.SQLException"%>
 <%@page import="org.cysecurity.cspf.jvl.model.DBConnect"%>
 <%@page import="java.sql.Connection"%>
+<%@page import="org.apache.taglibs.standard.functions.Functions"%>
 
  <%
    Connection con=new DBConnect().connect(getServletContext().getRealPath("/WEB-INF/config.properties"));
@@ -22,7 +23,8 @@
  ResultSet rs=listStmt.executeQuery();
  while(rs.next())
  {
-     out.print("<input type='radio' name='user' value='"+rs.getString("username")+"'/> "+rs.getString("username")+"<br/>");
+     // HTML-encode stored username before rendering to prevent Stored XSS (CWE-79)
+     out.print("<input type='radio' name='user' value='" + Functions.escapeXml(rs.getString("username")) + "'/> " + Functions.escapeXml(rs.getString("username")) + "<br/>");
  }
  %>
 <br/>
