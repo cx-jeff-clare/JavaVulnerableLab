@@ -1,6 +1,6 @@
 
  <%@page import="org.cysecurity.cspf.jvl.model.DBConnect"%>
-<%@page import="java.sql.Statement"%>
+<%@page import="java.sql.PreparedStatement"%>
 <%@page import="java.sql.ResultSet"%>
 <%@page import="java.sql.Connection"%>
 <%@ include file="header.jsp" %>
@@ -38,8 +38,11 @@ if(request.getParameter("secret")!=null)
              {
                  Connection con=new DBConnect().connect(getServletContext().getRealPath("/WEB-INF/config.properties"));
                   ResultSet rs=null;
-                  Statement stmt = con.createStatement();  
-                  rs=stmt.executeQuery("select * from users where username='"+request.getParameter("username").trim()+"' and secret='"+request.getParameter("secret")+"'");
+                  // Use PreparedStatement to prevent SQL injection
+                  PreparedStatement stmt = con.prepareStatement("select * from users where username=? and secret=?");
+                  stmt.setString(1, request.getParameter("username").trim());
+                  stmt.setString(2, request.getParameter("secret"));
+                  rs=stmt.executeQuery();
                   if(rs != null && rs.next()){
                       out.print("Hello "+rs.getString("username")+", <b class='success'> Your Password is: "+rs.getString("password"));
                   }
