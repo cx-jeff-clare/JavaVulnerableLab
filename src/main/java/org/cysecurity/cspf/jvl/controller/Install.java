@@ -16,6 +16,7 @@ import java.sql.SQLException;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.util.Properties;
+import java.util.regex.Pattern;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
@@ -36,6 +37,25 @@ public class Install extends HttpServlet {
        static String siteTitle;
        static String adminuser;
        static String adminpass;
+
+    /**
+     * Allowlist pattern for SQL identifiers (database names).
+     * Only alphanumeric characters and underscores are permitted.
+     * This prevents SQL injection in DDL statements where parameterized
+     * queries cannot be used (CREATE DATABASE, DROP DATABASE).
+     */
+    private static final Pattern VALID_IDENTIFIER = Pattern.compile("^[A-Za-z0-9_]{1,64}$");
+
+    /**
+     * Validates that the given name is a safe SQL identifier.
+     * Only alphanumeric characters and underscores are allowed.
+     *
+     * @param name the identifier to validate
+     * @return true if the identifier is safe, false otherwise
+     */
+    static boolean isValidIdentifier(String name) {
+        return name != null && VALID_IDENTIFIER.matcher(name).matches();
+    }
                
     /**
      * Processes requests for both HTTP <code>GET</code> and <code>POST</code>
@@ -103,10 +123,17 @@ public class Install extends HttpServlet {
     }
      protected boolean setup(String i) throws IOException
     {
-        
-       if(i.equals("1"))   
+
+       if(i.equals("1"))
        {
- 
+                    // Validate dbname is a safe SQL identifier before using in DDL.
+                    // DDL statements (CREATE/DROP DATABASE) do not support parameterized
+                    // queries, so we enforce a strict allowlist: only alphanumeric
+                    // characters and underscores are permitted (max 64 chars).
+                    if (!isValidIdentifier(dbname)) {
+                        return false;
+                    }
+
                     try
                    {
                     Class.forName(jdbcdriver);
@@ -114,10 +141,13 @@ public class Install extends HttpServlet {
                       if(con!=null && !con.isClosed())
                         {
                             //Database creation
-                             Statement stmt = con.createStatement();  
-                             stmt.executeUpdate("DROP DATABASE IF EXISTS "+dbname);
-                             
-                             stmt.executeUpdate("CREATE DATABASE "+dbname);
+                             Statement stmt = con.createStatement();
+                             // dbname has been validated as a safe identifier above;
+                             // backtick-quoting further ensures it is treated as an
+                             // identifier rather than SQL syntax.
+                             stmt.executeUpdate("DROP DATABASE IF EXISTS `" + dbname + "`");
+
+                             stmt.executeUpdate("CREATE DATABASE `" + dbname + "`");
                              con.close();
                             con= DriverManager.getConnection(dburl+dbname,dbuser,dbpass);
                              stmt = con.createStatement();
