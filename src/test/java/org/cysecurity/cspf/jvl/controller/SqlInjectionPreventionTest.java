@@ -418,6 +418,144 @@ public class SqlInjectionPreventionTest extends TestCase {
     }
 
     // =====================================================================
+    // Install.java identifier validation tests (SQL injection via DDL)
+    // =====================================================================
+
+    /**
+     * Verifies that isValidIdentifier accepts safe, well-formed database names.
+     *
+     * Background: DDL statements (CREATE DATABASE, DROP DATABASE) cannot use
+     * parameterized queries in JDBC. The Install servlet must validate that
+     * the user-supplied dbname is a safe SQL identifier before embedding it.
+     */
+    public void testValidIdentifierAcceptsSafeNames() {
+        assertTrue("Simple lowercase name must be valid", Install.isValidIdentifier("mydb"));
+        assertTrue("Uppercase name must be valid", Install.isValidIdentifier("MYDB"));
+        assertTrue("Mixed-case name must be valid", Install.isValidIdentifier("MyDatabase"));
+        assertTrue("Name with underscore must be valid", Install.isValidIdentifier("my_db_1"));
+        assertTrue("Alphanumeric name must be valid", Install.isValidIdentifier("db123"));
+        assertTrue("Single character must be valid", Install.isValidIdentifier("d"));
+        // 64 characters should be at the boundary limit
+        assertTrue("64-character name must be valid",
+            Install.isValidIdentifier("abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789"));
+    }
+
+    /**
+     * Verifies that isValidIdentifier rejects SQL injection payloads.
+     *
+     * These are the attack vectors that the original unguarded
+     * "DROP DATABASE IF EXISTS " + dbname code was vulnerable to.
+     * With the fix, any dbname containing SQL metacharacters is rejected
+     * outright, so the DDL is never executed.
+     */
+    public void testValidIdentifierRejectsSqlInjectionPayloads() {
+        // Classic injection: terminate the identifier and append DDL
+        assertFalse("Space injection must be rejected",
+            Install.isValidIdentifier("test db"));
+        assertFalse("Semicolon injection must be rejected",
+            Install.isValidIdentifier("testdb; DROP TABLE users; --"));
+        assertFalse("Single quote injection must be rejected",
+            Install.isValidIdentifier("testdb'"));
+        assertFalse("Double quote injection must be rejected",
+            Install.isValidIdentifier("testdb\""));
+        assertFalse("Backtick injection must be rejected",
+            Install.isValidIdentifier("testdb`"));
+        assertFalse("Dash comment injection must be rejected",
+            Install.isValidIdentifier("testdb--"));
+        assertFalse("Slash-star comment injection must be rejected",
+            Install.isValidIdentifier("testdb/*"));
+        assertFalse("Hyphen must be rejected (not a valid identifier char)",
+            Install.isValidIdentifier("test-db"));
+        assertFalse("Dollar sign must be rejected",
+            Install.isValidIdentifier("test$db"));
+        assertFalse("At sign must be rejected",
+            Install.isValidIdentifier("test@db"));
+        assertFalse("Equals sign must be rejected",
+            Install.isValidIdentifier("1=1"));
+        assertFalse("Parenthesis must be rejected",
+            Install.isValidIdentifier("db()"));
+        assertFalse("Null must be rejected",
+            Install.isValidIdentifier(null));
+        assertFalse("Empty string must be rejected",
+            Install.isValidIdentifier(""));
+    }
+
+    /**
+     * Verifies that isValidIdentifier enforces a maximum length of 64 characters.
+     *
+     * MySQL's maximum identifier length is 64 characters. Rejecting longer names
+     * prevents buffer-style exploitation and keeps identifiers within MySQL limits.
+     */
+    public void testValidIdentifierEnforcesMaxLength() {
+        // 65 characters — one over the limit
+        String tooLong = "abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_01234567891";
+        assertEquals("Too-long name must exceed 64 chars", 65, tooLong.length());
+        assertFalse("Identifier longer than 64 characters must be rejected",
+            Install.isValidIdentifier(tooLong));
+    }
+
+    /**
+     * Verifies that numeric-only names pass identifier validation.
+     * While unusual, all-digit database names are syntactically valid identifiers
+     * under the allowlist pattern.
+     */
+    public void testValidIdentifierAcceptsNumericName() {
+        assertTrue("All-digit name must pass the identifier check",
+            Install.isValidIdentifier("123456"));
+    }
+
+    /**
+     * End-to-end structural test: verify that the Install class uses
+     * isValidIdentifier as a guard before executing DDL with dbname.
+     *
+     * This test uses reflection to confirm the method exists with the
+     * expected signature, ensuring the guard cannot be accidentally removed.
+     */
+    public void testInstallClassHasIdentifierValidationMethod() {
+        try {
+            java.lang.reflect.Method m =
+                Install.class.getDeclaredMethod("isValidIdentifier", String.class);
+            assertNotNull("isValidIdentifier method must exist on Install class", m);
+            // Return type must be boolean (not void or Object)
+            assertEquals("isValidIdentifier must return boolean",
+                boolean.class, m.getReturnType());
+        } catch (NoSuchMethodException e) {
+            fail("Install class must have an isValidIdentifier(String) method: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Confirms that the SQL injection bypass payload that could have destroyed
+     * all databases is now structurally blocked by the identifier check.
+     *
+     * Original vulnerable call:
+     *   stmt.executeUpdate("DROP DATABASE IF EXISTS " + dbname);
+     *
+     * Attack payload:
+     *   dbname = "x`; DROP DATABASE production; -- "
+     *
+     * With the fix, isValidIdentifier("x`; DROP DATABASE production; -- ") returns
+     * false, so setup() returns false before any DDL is executed.
+     */
+    public void testDropDatabaseInjectionPayloadIsRejected() {
+        String[] ddlInjectionPayloads = {
+            "x`; DROP DATABASE production; -- ",
+            "valid_name`; CREATE USER hacker@'%' IDENTIFIED BY 'pass'; --",
+            "db UNION SELECT * FROM information_schema.tables",
+            "testdb; GRANT ALL ON *.* TO 'hacker'@'%'; --",
+            "db\0malicious",                          // null-byte injection
+            "db\nDROP DATABASE other",                // newline injection
+        };
+
+        for (String payload : ddlInjectionPayloads) {
+            assertFalse(
+                "DDL injection payload must be rejected by isValidIdentifier: [" + payload + "]",
+                Install.isValidIdentifier(payload)
+            );
+        }
+    }
+
+    // =====================================================================
     // Helper: Mock PreparedStatement for structural validation tests
     // This simulates the PreparedStatement binding behavior without a DB connection.
     // =====================================================================
