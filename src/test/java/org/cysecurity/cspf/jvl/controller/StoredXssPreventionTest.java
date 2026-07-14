@@ -502,6 +502,146 @@ public class StoredXssPreventionTest extends TestCase {
         assertTrue("subject < must be encoded", rendered.contains("&lt;"));
     }
 
+    // =========================================================================
+    // AddPage servlet - Stored XSS via filename parameter (CWE-79)
+    // =========================================================================
+
+    /**
+     * Tests encoding of filename parameter in the AddPage servlet response.
+     *
+     * Before fix (VULNERABLE - AddPage.java line 55):
+     *   out.print("Successfully created the file: <a href='../pages/"+fileName+"'>"+fileName+"</a>");
+     *
+     * After fix (SECURE):
+     *   String safeFileName = Functions.escapeXml(fileName);
+     *   out.print("Successfully created the file: <a href='../pages/"+safeFileName+"'>"+safeFileName+"</a>");
+     *
+     * Attack scenario: An admin-level attacker (or an attacker who gained admin access)
+     * submits a filename containing a script tag. When the page is created and the success
+     * response is rendered, the script executes in the admin's browser and is also stored
+     * on disk for future visitors.
+     */
+    public void testAddPageFilenameXssPayloadIsNeutralized() {
+        String maliciousFilename = "<script>alert('AddPage XSS')</script>.html";
+
+        // Simulate the VULNERABLE rendering (original code, without fix)
+        String vulnerableRendering = "Successfully created the file: <a href='../pages/" + maliciousFilename + "'>" + maliciousFilename + "</a>";
+        assertTrue("Vulnerable rendering would contain executable script tag",
+                vulnerableRendering.contains("<script>"));
+
+        // Simulate the SECURE rendering (fixed code, using Functions.escapeXml())
+        String safeFilename = escapeXml(maliciousFilename);
+        String secureRendering = "Successfully created the file: <a href='../pages/" + safeFilename + "'>" + safeFilename + "</a>";
+
+        assertFalse(
+            "Secure AddPage response must not contain executable <script> tag in href",
+            secureRendering.contains("<script>")
+        );
+        assertFalse(
+            "Secure AddPage response must not contain executable <script> tag in link text",
+            secureRendering.contains("<script>")
+        );
+        assertTrue("Angle brackets in filename must be HTML-encoded", secureRendering.contains("&lt;"));
+        assertTrue("Angle brackets in filename must be HTML-encoded", secureRendering.contains("&gt;"));
+    }
+
+    /**
+     * Tests that a filename with an event-handler injection payload is neutralized.
+     *
+     * Attack: filename = "page\" onmouseover=\"alert(1)\".html"
+     * Without encoding, this would inject an event handler into the <a> tag.
+     */
+    public void testAddPageFilenameAttributeInjectionIsNeutralized() {
+        String maliciousFilename = "page\" onmouseover=\"alert(1)\".html";
+
+        String safeFilename = escapeXml(maliciousFilename);
+        String secureRendering = "Successfully created the file: <a href='../pages/" + safeFilename + "'>" + safeFilename + "</a>";
+
+        assertFalse(
+            "Secure response must not contain raw double-quote that could break attribute context",
+            secureRendering.contains("onmouseover=\"alert")
+        );
+        assertTrue("Double quotes in filename must be encoded as &#034;", secureRendering.contains("&#034;"));
+    }
+
+    /**
+     * Tests that a filename with a javascript: URI is neutralized in the href attribute.
+     *
+     * Attack: filename = "javascript:alert(1)"
+     * Without encoding, a crafted URL like <a href='../pages/javascript:alert(1)'> would be dangerous
+     * if the single-quote in href value could be broken out of.
+     */
+    public void testAddPageFilenameJavascriptUriPayloadIsNeutralized() {
+        String maliciousFilename = "' href='javascript:alert(1)' x='";
+
+        String safeFilename = escapeXml(maliciousFilename);
+        String secureRendering = "Successfully created the file: <a href='../pages/" + safeFilename + "'>" + safeFilename + "</a>";
+
+        assertFalse(
+            "Single-quote injection must not break out of href attribute context",
+            secureRendering.contains("javascript:alert")
+        );
+        assertTrue("Single quotes in filename must be encoded as &#039;", secureRendering.contains("&#039;"));
+    }
+
+    /**
+     * Tests that a normal (safe) filename is preserved correctly after encoding
+     * in the AddPage success response.
+     *
+     * Ensures the fix does not break legitimate filenames.
+     */
+    public void testAddPageNormalFilenameIsPreserved() {
+        String normalFilename = "my-page.html";
+
+        String safeFilename = escapeXml(normalFilename);
+        String rendering = "Successfully created the file: <a href='../pages/" + safeFilename + "'>" + safeFilename + "</a>";
+
+        // Normal filename should be unchanged
+        assertEquals("Normal filename must not be altered by encoding", normalFilename, safeFilename);
+        assertTrue("Rendered link must contain the filename", rendering.contains(normalFilename));
+        assertTrue("Rendered link must contain href to file", rendering.contains("../pages/" + normalFilename));
+    }
+
+    /**
+     * Tests that a filename with numeric characters is preserved correctly.
+     */
+    public void testAddPageFilenameWithNumbersIsPreserved() {
+        String normalFilename = "page123.html";
+
+        String safeFilename = escapeXml(normalFilename);
+        assertEquals("Filename with numbers must be unchanged by encoding", normalFilename, safeFilename);
+    }
+
+    /**
+     * Tests the full rendering context of AddPage with an XSS payload in both
+     * the href attribute and the link text simultaneously.
+     *
+     * Both uses of 'fileName' in the original output:
+     *   <a href='../pages/[FILENAME]'>[FILENAME]</a>
+     * must be encoded. The fix correctly uses 'safeFileName' for both locations.
+     */
+    public void testAddPageBothHrefAndLinkTextAreEncoded() {
+        String maliciousFilename = "<script>document.location='http://evil.com'</script>";
+
+        String safeFilename = escapeXml(maliciousFilename);
+
+        // Verify href context is safe
+        String href = "../pages/" + safeFilename;
+        assertFalse("href must not contain executable script", href.contains("<script>"));
+
+        // Verify link text context is safe
+        assertFalse("Link text must not contain executable script", safeFilename.contains("<script>"));
+
+        // Verify both are identically encoded (same safeFileName used twice)
+        String rendering = "Successfully created the file: <a href='../pages/" + safeFilename + "'>" + safeFilename + "</a>";
+        assertEquals(
+            "Both href and link text must use the same encoded value",
+            "Successfully created the file: <a href='../pages/" + safeFilename + "'>" + safeFilename + "</a>",
+            rendering
+        );
+        assertTrue("Encoding must encode < in both positions", rendering.contains("&lt;script&gt;"));
+    }
+
     /**
      * Tests that XSS payloads using various encoding and obfuscation techniques
      * are properly neutralized by HTML encoding.

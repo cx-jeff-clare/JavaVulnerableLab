@@ -15,6 +15,7 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import org.apache.taglibs.standard.functions.Functions;
 
 /**
  *
@@ -52,7 +53,9 @@ public class AddPage extends HttpServlet {
                     BufferedWriter bw=new BufferedWriter(new FileWriter(f.getAbsoluteFile()));
                     bw.write(content);
                     bw.close();
-                    out.print("Successfully created the file: <a href='../pages/"+fileName+"'>"+fileName+"</a>");
+                    // HTML-encode the user-supplied fileName before rendering to prevent Stored XSS (CWE-79)
+                    String safeFileName = Functions.escapeXml(fileName);
+                    out.print("Successfully created the file: <a href='../pages/"+safeFileName+"'>"+safeFileName+"</a>");
                 }
                 else
                 {
