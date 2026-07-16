@@ -16,6 +16,7 @@ import java.sql.SQLException;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.util.Properties;
+import java.util.regex.Pattern;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
@@ -101,22 +102,45 @@ public class Install extends HttpServlet {
              
          }
     }
+    /**
+     * Validates that a database name contains only alphanumeric characters and underscores.
+     * This allowlist validation prevents SQL injection in DDL statements (CREATE/DROP DATABASE)
+     * where JDBC parameterized queries cannot be used for identifier names.
+     *
+     * @param name the database name to validate
+     * @return true if the name is safe to use as a SQL identifier, false otherwise
+     */
+    static boolean isValidIdentifier(String name) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+        // Strict allowlist: only alphanumeric characters and underscores are permitted
+        // This prevents SQL injection through identifier names in DDL statements
+        return Pattern.matches("^[A-Za-z0-9_]+$", name);
+    }
+
      protected boolean setup(String i) throws IOException
     {
-        
-       if(i.equals("1"))   
+
+       if(i.equals("1"))
        {
- 
+
                     try
                    {
+                    // Validate dbname against a strict allowlist before using in DDL statements.
+                    // JDBC PreparedStatement cannot parameterize database/table identifiers,
+                    // so allowlist validation is the SAST-recognized mitigation for identifier injection.
+                    if (!isValidIdentifier(dbname)) {
+                        return false;
+                    }
                     Class.forName(jdbcdriver);
                     Connection con= DriverManager.getConnection(dburl,dbuser,dbpass);
                       if(con!=null && !con.isClosed())
                         {
                             //Database creation
-                             Statement stmt = con.createStatement();  
+                             Statement stmt = con.createStatement();
                              stmt.executeUpdate("DROP DATABASE IF EXISTS "+dbname);
-                             
+
                              stmt.executeUpdate("CREATE DATABASE "+dbname);
                              con.close();
                             con= DriverManager.getConnection(dburl+dbname,dbuser,dbpass);
