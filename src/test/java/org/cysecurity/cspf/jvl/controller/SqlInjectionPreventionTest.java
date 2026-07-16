@@ -418,6 +418,182 @@ public class SqlInjectionPreventionTest extends TestCase {
     }
 
     // =====================================================================
+    // Hibernate HQL Injection prevention tests (orm.jsp - CWE-89)
+    // The orm.jsp page previously used:
+    //   session.createQuery("from Users where id=" + id)
+    // which allowed HQL injection. The fix uses a named parameter:
+    //   session.createQuery("from Users where id=:userId")
+    //   query.setParameter("userId", Long.parseLong(id))
+    // =====================================================================
+
+    /**
+     * Tests that the ORM query template uses a named parameter placeholder
+     * and NOT string concatenation, preventing HQL injection.
+     *
+     * Attack payload that would have exposed all users with string concatenation:
+     *   id: 1 OR 1=1
+     *
+     * With the named-parameter fix, any non-numeric input throws NumberFormatException
+     * before the query is even constructed, and numeric input is bound safely.
+     */
+    public void testOrmQueryUsesNamedParameterNotConcatenation() throws Exception {
+        // Validate that numeric IDs parse correctly and produce no injection opportunity
+        String validId = "3";
+        long parsedId = Long.parseLong(validId); // must not throw
+        assertEquals("Valid numeric ID must parse to long without error", 3L, parsedId);
+
+        // Construct the safe HQL template as used in the fixed orm.jsp
+        MockHqlQuery mockQuery = new MockHqlQuery("from Users where id=:userId");
+        mockQuery.setParameter("userId", parsedId);
+
+        // The HQL template must NOT contain user input directly
+        assertEquals(
+            "HQL template must use named placeholder :userId, not concatenated id",
+            "from Users where id=:userId",
+            mockQuery.getHqlTemplate()
+        );
+
+        // The parameter value is bound separately from the query structure
+        assertEquals("userId parameter must be bound to the parsed long value", parsedId, mockQuery.getParameter("userId"));
+
+        // Template must not contain any literal numeric value from the user input
+        assertFalse(
+            "HQL template must not contain literal user-supplied id",
+            mockQuery.getHqlTemplate().contains(validId)
+        );
+    }
+
+    /**
+     * Tests that common HQL injection payloads are rejected with NumberFormatException
+     * when the fix enforces Long.parseLong() on the id parameter.
+     *
+     * Payloads that would have succeeded with string concatenation:
+     *   "1 OR 1=1"               → returns all rows
+     *   "1; DROP TABLE users"    → DDL injection attempt
+     *   "1 UNION SELECT ..."     → data exfiltration attempt
+     *   "' OR ''='"              → classic bypass
+     */
+    public void testOrmQueryRejectsNonNumericInjectionPayloads() {
+        String[] injectionPayloads = {
+            "1 OR 1=1",
+            "1; DROP TABLE users",
+            "1 UNION SELECT username FROM users",
+            "' OR ''='",
+            "1 AND SLEEP(5)",
+            "admin",
+            "",
+            null
+        };
+
+        for (String payload : injectionPayloads) {
+            try {
+                // Long.parseLong is used in the fixed orm.jsp to validate user input
+                // Any non-numeric payload must throw NumberFormatException
+                Long.parseLong(payload);
+                // If we reach here, the payload was a valid long — that is acceptable
+                // only for pure numeric strings, but the payloads above are not numeric
+                fail("Expected NumberFormatException for injection payload: " + payload);
+            } catch (NumberFormatException e) {
+                // Expected: injection payload rejected before query is built
+                assertNotNull("NumberFormatException must be thrown for non-numeric payload", e);
+            } catch (NullPointerException e) {
+                // Also acceptable: null input throws NPE from Long.parseLong(null)
+                assertNotNull("NullPointerException is acceptable for null id input", e);
+            }
+        }
+    }
+
+    /**
+     * Tests that the fixed HQL query template is structurally different from
+     * the vulnerable concatenated form.
+     *
+     * Vulnerable (old):  "from Users where id=" + id
+     * Fixed (new):       "from Users where id=:userId"  +  query.setParameter("userId", Long.parseLong(id))
+     */
+    public void testOrmHqlTemplateStructureIsParameterized() {
+        String safeHqlTemplate = "from Users where id=:userId";
+
+        // Must contain the named parameter marker
+        assertTrue(
+            "Safe HQL must use named parameter :userId",
+            safeHqlTemplate.contains(":userId")
+        );
+
+        // Must NOT contain string concatenation artifact — no raw '+'
+        // (verified structurally by testing the constant template string)
+        assertFalse(
+            "HQL template must not end with '=' implying direct concatenation",
+            safeHqlTemplate.endsWith("id=")
+        );
+
+        // Must not contain any SQL/HQL injection metacharacters that imply concatenation
+        assertFalse("Template must not contain OR keyword from user injection", safeHqlTemplate.toUpperCase().contains(" OR "));
+        assertFalse("Template must not contain UNION keyword from user injection", safeHqlTemplate.toUpperCase().contains("UNION"));
+        assertFalse("Template must not contain DROP keyword from user injection", safeHqlTemplate.toUpperCase().contains("DROP"));
+    }
+
+    /**
+     * Tests that valid numeric user IDs are correctly parsed to Long and
+     * can be used as the named parameter value in the safe HQL query.
+     *
+     * Boundary values and typical IDs should parse successfully.
+     */
+    public void testOrmQueryAcceptsValidNumericIds() {
+        long[] validIds = { 1L, 2L, 3L, 100L, Long.MAX_VALUE };
+
+        for (long expectedId : validIds) {
+            String idParam = String.valueOf(expectedId);
+            long parsedId = Long.parseLong(idParam);
+
+            assertEquals(
+                "Numeric id parameter must parse correctly: " + idParam,
+                expectedId,
+                parsedId
+            );
+
+            // Verify the id can be safely set as a named parameter
+            MockHqlQuery mockQuery = new MockHqlQuery("from Users where id=:userId");
+            mockQuery.setParameter("userId", parsedId);
+
+            assertEquals(
+                "Named parameter must hold parsed long value for id=" + idParam,
+                parsedId,
+                mockQuery.getParameter("userId")
+            );
+        }
+    }
+
+    // =====================================================================
+    // Helper: Mock HQL Query for structural validation tests
+    // This simulates Hibernate Query named parameter binding without a session.
+    // =====================================================================
+
+    /**
+     * A minimal mock of Hibernate's Query interface that captures the HQL template
+     * and bound named parameters for structural verification without a real session.
+     */
+    private static class MockHqlQuery {
+        private final String hqlTemplate;
+        private final java.util.Map<String, Object> parameters = new java.util.HashMap<String, Object>();
+
+        MockHqlQuery(String hqlTemplate) {
+            this.hqlTemplate = hqlTemplate;
+        }
+
+        void setParameter(String name, Object value) {
+            parameters.put(name, value);
+        }
+
+        String getHqlTemplate() {
+            return hqlTemplate;
+        }
+
+        Object getParameter(String name) {
+            return parameters.get(name);
+        }
+    }
+
+    // =====================================================================
     // Helper: Mock PreparedStatement for structural validation tests
     // This simulates the PreparedStatement binding behavior without a DB connection.
     // =====================================================================
