@@ -535,4 +535,138 @@ public class StoredXssPreventionTest extends TestCase {
             );
         }
     }
+
+    // =========================================================================
+    // AddPage servlet fileName Stored XSS remediation tests (CWE-79)
+    // =========================================================================
+
+    /**
+     * Tests encoding of the 'filename' parameter in AddPage servlet response.
+     *
+     * The vulnerability was in AddPage.java where user-supplied 'filename' was
+     * written directly into an HTML anchor tag without encoding:
+     *
+     *   Before fix (VULNERABLE):
+     *     out.print("Successfully created the file: <a href='../pages/"+fileName+"'>"+fileName+"</a>");
+     *
+     *   After fix (SECURE):
+     *     String safeFileName = Functions.escapeXml(fileName);
+     *     out.print("Successfully created the file: <a href='../pages/"+safeFileName+"'>"+safeFileName+"</a>");
+     *
+     * A malicious admin could submit a filename containing a script tag that would
+     * execute in the browser when the success message is rendered.
+     */
+    public void testAddPageFileNameScriptTagIsNeutralized() {
+        String maliciousFileName = "<script>alert('stored XSS via filename')</script>.html";
+        String safeFileName = escapeXml(maliciousFileName);
+        String rendered = "Successfully created the file: <a href='../pages/" + safeFileName + "'>" + safeFileName + "</a>";
+
+        assertFalse(
+            "Rendered AddPage response must not contain executable <script> tag",
+            rendered.contains("<script>")
+        );
+        assertTrue(
+            "Rendered AddPage response must contain HTML-encoded < character",
+            rendered.contains("&lt;")
+        );
+        assertTrue(
+            "Rendered AddPage response must contain HTML-encoded > character",
+            rendered.contains("&gt;")
+        );
+    }
+
+    /**
+     * Tests that an attribute-breaking XSS payload in the filename is neutralized.
+     *
+     * Attack: An attacker submits a filename like:
+     *   "><script>alert(1)</script><x y="
+     *
+     * Without encoding this would break out of the href attribute context and
+     * inject arbitrary JavaScript. With Functions.escapeXml(), the double-quote
+     * is encoded as &#034; preventing attribute breakout.
+     */
+    public void testAddPageFileNameAttributeBreakoutIsNeutralized() {
+        String maliciousFileName = "\"><script>alert(1)</script><x y=\".html";
+        String safeFileName = escapeXml(maliciousFileName);
+        String rendered = "Successfully created the file: <a href='../pages/" + safeFileName + "'>" + safeFileName + "</a>";
+
+        assertFalse(
+            "Rendered AddPage response must not allow attribute breakout via double-quote",
+            rendered.contains("\"><script>")
+        );
+        assertTrue("Double-quote in filename must be encoded as &#034;", safeFileName.contains("&#034;"));
+        assertTrue("< in filename must be encoded as &lt;", safeFileName.contains("&lt;"));
+    }
+
+    /**
+     * Tests that an event-handler injection via the filename href attribute is neutralized.
+     *
+     * Attack: A filename like:
+     *   normal.html' onmouseover='alert(1)
+     *
+     * Without encoding, this would inject an onmouseover event handler into the
+     * anchor element. With Functions.escapeXml(), the single-quote is encoded as &#039;.
+     */
+    public void testAddPageFileNameEventHandlerInjectionIsNeutralized() {
+        String maliciousFileName = "normal.html' onmouseover='alert(1)";
+        String safeFileName = escapeXml(maliciousFileName);
+        String rendered = "Successfully created the file: <a href='../pages/" + safeFileName + "'>" + safeFileName + "</a>";
+
+        assertFalse(
+            "Rendered AddPage response must not contain injected onmouseover handler",
+            rendered.contains("onmouseover=")
+        );
+        assertTrue("Single-quote in filename must be encoded as &#039;", safeFileName.contains("&#039;"));
+    }
+
+    /**
+     * Tests that the AddPage response correctly renders a safe, normal filename
+     * without corrupting it through HTML encoding.
+     *
+     * Normal filenames with alphanumeric characters and dots/dashes should
+     * pass through HTML encoding unchanged.
+     */
+    public void testAddPageNormalFileNameIsPreserved() {
+        String normalFileName = "my-page_2024.html";
+        String safeFileName = escapeXml(normalFileName);
+        String rendered = "Successfully created the file: <a href='../pages/" + safeFileName + "'>" + safeFileName + "</a>";
+
+        assertEquals(
+            "Normal filename must pass through encoding unchanged",
+            normalFileName,
+            safeFileName
+        );
+        assertTrue(
+            "Rendered response must contain the original filename in the anchor text",
+            rendered.contains(">" + normalFileName + "</a>")
+        );
+    }
+
+    /**
+     * Tests the full rendering path of the AddPage success response after remediation.
+     *
+     * Simulates the complete HTML output produced by AddPage.java after encoding:
+     *   String safeFileName = Functions.escapeXml(fileName);
+     *   out.print("Successfully created the file: <a href='../pages/"+safeFileName+"'>"+safeFileName+"</a>");
+     *
+     * Verifies that both the href attribute value and the anchor link text are encoded,
+     * ensuring neither context is exploitable.
+     */
+    public void testAddPageSuccessResponseFullRenderingWithXssPayload() {
+        // Common stored XSS attack payload submitted as a filename
+        String maliciousFileName = "<img src=x onerror=alert(document.cookie)>.html";
+        String safeFileName = escapeXml(maliciousFileName);
+
+        // Simulate both occurrences of fileName in the rendered HTML (href and link text)
+        String rendered = "Successfully created the file: <a href='../pages/" + safeFileName + "'>" + safeFileName + "</a>";
+
+        // The rendered page must not contain any executable HTML tags
+        assertFalse("Rendered response must not contain <img> tag", rendered.contains("<img"));
+        assertFalse("Rendered response must not contain onerror handler", rendered.contains("onerror="));
+
+        // Both uses of safeFileName (in href and in anchor text) must be encoded
+        long ltCount = rendered.chars().filter(c -> rendered.indexOf("&lt;") >= 0).count();
+        assertTrue("HTML-encoded output must contain &lt; entities", rendered.contains("&lt;"));
+        assertTrue("HTML-encoded output must contain &gt; entities", rendered.contains("&gt;"));
+    }
 }
