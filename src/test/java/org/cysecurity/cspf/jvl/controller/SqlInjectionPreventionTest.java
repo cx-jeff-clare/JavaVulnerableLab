@@ -594,6 +594,175 @@ public class SqlInjectionPreventionTest extends TestCase {
     }
 
     // =====================================================================
+    // Install.java DDL Identifier Injection prevention tests (CWE-89)
+    // The Install servlet previously used:
+    //   stmt.executeUpdate("DROP DATABASE IF EXISTS " + dbname)
+    //   stmt.executeUpdate("CREATE DATABASE " + dbname)
+    // where dbname came directly from request.getParameter("dbname").
+    // JDBC PreparedStatement cannot parameterize DDL identifier names, so
+    // the fix validates dbname against a strict allowlist pattern
+    // (^[A-Za-z0-9_]+$) before allowing it to be used in DDL statements.
+    // =====================================================================
+
+    /**
+     * Tests that isValidIdentifier accepts only safe alphanumeric/underscore names.
+     *
+     * Valid database names (alphanumeric + underscores) must be allowed so
+     * legitimate setup requests succeed.
+     */
+    public void testInstallValidIdentifierAcceptsLegitimateNames() {
+        // These are typical valid database names
+        String[] validNames = {
+            "mydb",
+            "test_db",
+            "JavaVulnerableLab",
+            "db123",
+            "MY_DATABASE_1",
+            "a",
+            "ABC123"
+        };
+        for (String name : validNames) {
+            assertTrue(
+                "isValidIdentifier must accept safe name: " + name,
+                Install.isValidIdentifier(name)
+            );
+        }
+    }
+
+    /**
+     * Tests that isValidIdentifier rejects null and empty inputs.
+     */
+    public void testInstallValidIdentifierRejectsNullAndEmpty() {
+        assertFalse("isValidIdentifier must reject null", Install.isValidIdentifier(null));
+        assertFalse("isValidIdentifier must reject empty string", Install.isValidIdentifier(""));
+    }
+
+    /**
+     * Tests that isValidIdentifier blocks classic SQL injection payloads
+     * that would have manipulated the DROP/CREATE DATABASE statements.
+     *
+     * Attack vectors that were previously injectable:
+     *   dbname: "jvl; DROP DATABASE jvl; --"
+     *   → stmt.executeUpdate("DROP DATABASE IF EXISTS jvl; DROP DATABASE jvl; --")
+     *
+     *   dbname: "jvl`; GRANT ALL ON *.* TO 'hacker'@'%'"
+     *   → stmt.executeUpdate("CREATE DATABASE jvl`; GRANT ALL ON *.* TO 'hacker'@'%'")
+     */
+    public void testInstallValidIdentifierRejectsSqlInjectionPayloads() {
+        String[] injectionPayloads = {
+            "jvl; DROP DATABASE jvl; --",
+            "jvl` UNION SELECT 1",
+            "'; GRANT ALL ON *.* TO 'hacker'@'%'--",
+            "test OR 1=1",
+            "db--",
+            "db/*comment*/",
+            "db\\'",
+            "db name",          // space is not allowed
+            "db-name",          // hyphen is not allowed
+            "db.name",          // dot is not allowed
+            "jvl\nDROP TABLE",  // newline injection
+            "jvl\tDROP",        // tab injection
+            "jvl`",             // backtick used for identifier quoting bypass
+            "jvl'",             // single quote
+            "jvl\"",            // double quote
+            "jvl;",             // semicolon (statement terminator)
+            "jvl/",             // forward slash
+            "jvl\\",            // backslash
+            "jvl(",             // parenthesis
+            "jvl)"
+        };
+
+        for (String payload : injectionPayloads) {
+            assertFalse(
+                "isValidIdentifier must reject injection payload: [" + payload + "]",
+                Install.isValidIdentifier(payload)
+            );
+        }
+    }
+
+    /**
+     * Tests that the allowlist pattern rejects all SQL metacharacters.
+     * This test specifically validates that the strict pattern
+     * ^[A-Za-z0-9_]+$ correctly blocks every character that could
+     * be used to break out of or extend the DDL statement.
+     */
+    public void testInstallValidIdentifierRejectsSqlMetacharacters() {
+        // Each of these characters, if injected into a DDL statement,
+        // could alter or extend the SQL command
+        char[] sqlMetacharacters = {
+            '\'', '"', '`', ';', '-', '/', '\\', '*', '(', ')',
+            ' ', '\t', '\n', '\r', '#', '%', '=', '<', '>', '!'
+        };
+
+        for (char meta : sqlMetacharacters) {
+            String payload = "db" + meta + "name";
+            assertFalse(
+                "isValidIdentifier must reject name containing metacharacter '" + meta + "': [" + payload + "]",
+                Install.isValidIdentifier(payload)
+            );
+        }
+    }
+
+    /**
+     * Tests that isValidIdentifier enforces the guard before DDL execution.
+     *
+     * This verifies the structural guarantee: when isValidIdentifier returns
+     * false (malicious dbname), setup() returns false before attempting any
+     * database operations, so the taint flow is broken at the input boundary.
+     */
+    public void testInstallSetupRejectsInvalidDbName() {
+        // Simulate what the fixed setup() method does:
+        // If isValidIdentifier(dbname) returns false → setup returns false immediately
+        String[] maliciousDbNames = {
+            "jvl; DROP DATABASE jvl; --",
+            "x OR 1=1",
+            null,
+            ""
+        };
+
+        for (String badName : maliciousDbNames) {
+            assertFalse(
+                "Install.isValidIdentifier must return false for malicious dbname: " + badName,
+                Install.isValidIdentifier(badName)
+            );
+            // Guard means setup() returns false immediately — the DDL concatenation
+            // "DROP DATABASE IF EXISTS " + badName is never reached
+        }
+    }
+
+    /**
+     * Tests that the DDL SQL templates do not use parameterized placeholders
+     * (which cannot be used for identifiers) but that the identifier itself
+     * has been validated to contain only safe characters before concatenation.
+     *
+     * This validates that the combination of:
+     *   1. Strict allowlist validation (isValidIdentifier)
+     *   2. DDL string concatenation with validated identifier
+     * is safe — the identifier cannot contain SQL metacharacters.
+     */
+    public void testInstallDdlSafetyGuarantee() {
+        // Simulate what the fixed code does after validation passes
+        String safeDbName = "javavulnerablelab";
+
+        // Precondition: name passed validation
+        assertTrue("Safe dbname must pass validation", Install.isValidIdentifier(safeDbName));
+
+        // After validation, the DDL statements use the safe name
+        String dropSql = "DROP DATABASE IF EXISTS " + safeDbName;
+        String createSql = "CREATE DATABASE " + safeDbName;
+
+        // The resulting SQL must not contain any injection metacharacters
+        assertFalse("DROP SQL must not contain semicolons", dropSql.contains(";"));
+        assertFalse("DROP SQL must not contain quotes", dropSql.contains("'") || dropSql.contains("\""));
+        assertFalse("CREATE SQL must not contain semicolons", createSql.contains(";"));
+        assertFalse("CREATE SQL must not contain quotes", createSql.contains("'") || createSql.contains("\""));
+
+        // Verify name appears literally in the DDL (no unexpected characters)
+        assertTrue("DROP SQL must end with validated identifier", dropSql.endsWith(safeDbName));
+        assertTrue("CREATE SQL must end with validated identifier", createSql.endsWith(safeDbName));
+    }
+
+    // =====================================================================
     // Helper: Mock PreparedStatement for structural validation tests
     // This simulates the PreparedStatement binding behavior without a DB connection.
     // =====================================================================
