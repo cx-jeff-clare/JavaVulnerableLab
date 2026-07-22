@@ -57,7 +57,12 @@ public class Install extends HttpServlet {
         jdbcdriver = request.getParameter("jdbcdriver");
         dbuser = request.getParameter("dbuser");
         dbpass = request.getParameter("dbpass");
-        dbname = request.getParameter("dbname");
+        // Validate dbname at the input boundary: only alphanumeric characters and
+        // underscores are permitted. JDBC PreparedStatement cannot parameterize
+        // SQL identifiers (database/table names) in DDL statements, so an allowlist
+        // at the input boundary is the recognized mitigation for identifier injection.
+        String rawDbname = request.getParameter("dbname");
+        dbname = isValidIdentifier(rawDbname) ? rawDbname : null;
         siteTitle= request.getParameter("siteTitle");
         adminuser= request.getParameter("adminuser");
         adminpass= HashMe.hashMe(request.getParameter("adminpass"));
@@ -69,7 +74,7 @@ public class Install extends HttpServlet {
          config.setProperty("jdbcdriver",jdbcdriver);
          config.setProperty("dbuser",dbuser);
          config.setProperty("dbpass",dbpass);
-         config.setProperty("dbname",dbname);
+         config.setProperty("dbname", dbname != null ? dbname : "");
          config.setProperty("siteTitle",siteTitle);
          FileOutputStream fileout = new FileOutputStream(configPath);
          config.store(fileout, null); 

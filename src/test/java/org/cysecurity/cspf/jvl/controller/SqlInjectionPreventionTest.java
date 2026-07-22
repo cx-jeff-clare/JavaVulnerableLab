@@ -763,6 +763,164 @@ public class SqlInjectionPreventionTest extends TestCase {
     }
 
     // =====================================================================
+    // Install.java input-boundary sanitization tests (CWE-89)
+    // The fix moves sanitization to the INPUT BOUNDARY in processRequest():
+    //   String rawDbname = request.getParameter("dbname");
+    //   dbname = isValidIdentifier(rawDbname) ? rawDbname : null;
+    // This ensures the tainted value from getParameter("dbname") never
+    // reaches the DDL executeUpdate sink as an unsanitized identifier.
+    // =====================================================================
+
+    /**
+     * Tests that the input-boundary sanitization pattern assigns only validated
+     * identifiers to the dbname field, or null for invalid/malicious input.
+     *
+     * This replicates the logic added to processRequest() in Install.java:
+     *   String rawDbname = request.getParameter("dbname");
+     *   dbname = isValidIdentifier(rawDbname) ? rawDbname : null;
+     *
+     * The taint flow from request.getParameter("dbname") is broken at the
+     * input boundary: tainted rawDbname never flows to the DDL sink unless
+     * it is confirmed to contain only safe identifier characters.
+     */
+    public void testInputBoundarySanitizationAssignsValidDbname() {
+        // Simulate valid dbname input — should be accepted unchanged
+        String[] validInputs = {
+            "javavulnerablelab",
+            "test_db",
+            "MyDatabase123",
+            "db1",
+            "A_B_C"
+        };
+
+        for (String input : validInputs) {
+            // Replicate the input-boundary guard from processRequest()
+            String sanitizedDbname = Install.isValidIdentifier(input) ? input : null;
+
+            assertNotNull(
+                "Valid dbname must be assigned (not null) after input-boundary sanitization: " + input,
+                sanitizedDbname
+            );
+            assertEquals(
+                "Valid dbname must be preserved exactly as entered: " + input,
+                input,
+                sanitizedDbname
+            );
+        }
+    }
+
+    /**
+     * Tests that the input-boundary sanitization pattern sets dbname to null
+     * for any injection payload, preventing the tainted value from ever
+     * reaching the DDL executeUpdate sink.
+     *
+     * Attack vectors that were exploitable before the input-boundary fix:
+     *   "jvl; DROP DATABASE jvl; --"  → stmt.executeUpdate("DROP DATABASE IF EXISTS jvl; DROP DATABASE jvl; --")
+     *   "jvl` UNION SELECT 1"          → multi-statement injection in CREATE DATABASE
+     *
+     * After the fix, these payloads produce null which causes isValidIdentifier(null)
+     * to return false in setup(), and setup() exits before any DDL is executed.
+     */
+    public void testInputBoundarySanitizationNullsInjectionPayloads() {
+        String[] injectionPayloads = {
+            "jvl; DROP DATABASE jvl; --",
+            "jvl` UNION SELECT 1",
+            "'; GRANT ALL ON *.* TO 'hacker'@'%'--",
+            "test OR 1=1",
+            "db--",
+            "db/*comment*/",
+            "db name",
+            "db-name",
+            "db.name",
+            null,
+            ""
+        };
+
+        for (String payload : injectionPayloads) {
+            // Replicate the input-boundary guard from processRequest()
+            String sanitizedDbname = Install.isValidIdentifier(payload) ? payload : null;
+
+            assertNull(
+                "Injection payload must produce null dbname after input-boundary sanitization: [" + payload + "]",
+                sanitizedDbname
+            );
+        }
+    }
+
+    /**
+     * Tests the defense-in-depth scenario: even if the input-boundary check is
+     * somehow bypassed, the setup() guard (isValidIdentifier(dbname)) still
+     * blocks the DDL from executing.
+     *
+     * The dual-layer defense is:
+     *   Layer 1 (input boundary): dbname = isValidIdentifier(rawDbname) ? rawDbname : null
+     *   Layer 2 (setup guard):    if (!isValidIdentifier(dbname)) { return false; }
+     *
+     * This test validates Layer 2 independently.
+     */
+    public void testSetupGuardProvidesDefenseInDepth() {
+        // Simulate Layer 1 being bypassed (dbname set to injection payload directly)
+        String[] bypassAttempts = {
+            "jvl; DROP DATABASE jvl; --",
+            "'; GRANT ALL--",
+            null,
+            ""
+        };
+
+        for (String bypassedDbname : bypassAttempts) {
+            // Layer 2: setup() guard calls isValidIdentifier(dbname) before DDL
+            boolean wouldExecuteDDL = Install.isValidIdentifier(bypassedDbname);
+            assertFalse(
+                "Defense-in-depth Layer 2 must block DDL for bypassed dbname: [" + bypassedDbname + "]",
+                wouldExecuteDDL
+            );
+        }
+    }
+
+    /**
+     * Tests that the end-to-end taint-breaking guarantee holds:
+     * a malicious dbname from request.getParameter() can never appear in a
+     * concatenated DDL string, because the input-boundary check returns null
+     * for invalid identifiers, and the setup() guard catches null.
+     *
+     * This validates that the DDL strings "DROP DATABASE IF EXISTS " + dbname
+     * and "CREATE DATABASE " + dbname are only executed when dbname contains
+     * exclusively alphanumeric characters and underscores.
+     */
+    public void testTaintFlowBreakEndToEndGuarantee() {
+        String[] httpParameterValues = {
+            "safe_db",               // Safe: should reach DDL
+            "safe123",               // Safe: should reach DDL
+            "jvl;DROP TABLE users",  // Injection: must never reach DDL
+            "<script>alert(1)</script>", // XSS attempt: must never reach DDL
+            "' OR '1'='1",           // SQL injection: must never reach DDL
+            "jvl\nEXEC sp_addlogin", // CRLF injection: must never reach DDL
+        };
+
+        for (String httpValue : httpParameterValues) {
+            // Layer 1: input boundary (processRequest)
+            String sanitizedDbname = Install.isValidIdentifier(httpValue) ? httpValue : null;
+            // Layer 2: setup() guard
+            boolean safeToUseinDdl = Install.isValidIdentifier(sanitizedDbname);
+
+            if (httpValue != null && httpValue.matches("^[A-Za-z0-9_]+$")) {
+                // Safe input: both layers pass, DDL is safe
+                assertNotNull("Safe dbname must not be nulled at input boundary: " + httpValue, sanitizedDbname);
+                assertTrue("Safe dbname must pass setup() guard: " + httpValue, safeToUseinDdl);
+
+                // Verify the resulting DDL contains no metacharacters
+                String dropSql = "DROP DATABASE IF EXISTS " + sanitizedDbname;
+                assertFalse("DDL for safe name must not contain metacharacters: " + httpValue,
+                    dropSql.matches(".*[;'\"` \\t\\n].*"));
+            } else {
+                // Malicious input: Layer 1 nullifies it, Layer 2 blocks it
+                assertNull("Malicious dbname must be nulled at input boundary: " + httpValue, sanitizedDbname);
+                assertFalse("Null dbname must be blocked by setup() guard", safeToUseinDdl);
+            }
+        }
+    }
+
+    // =====================================================================
     // Helper: Mock PreparedStatement for structural validation tests
     // This simulates the PreparedStatement binding behavior without a DB connection.
     // =====================================================================
