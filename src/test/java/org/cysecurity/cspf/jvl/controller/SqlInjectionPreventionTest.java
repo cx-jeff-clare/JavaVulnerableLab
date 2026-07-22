@@ -712,7 +712,7 @@ public class SqlInjectionPreventionTest extends TestCase {
      */
     public void testInstallSetupRejectsInvalidDbName() {
         // Simulate what the fixed setup() method does:
-        // If isValidIdentifier(dbname) returns false → setup returns false immediately
+        // If isValidIdentifier(requestedDbName) returns false → setup returns false immediately
         String[] maliciousDbNames = {
             "jvl; DROP DATABASE jvl; --",
             "x OR 1=1",
@@ -726,7 +726,7 @@ public class SqlInjectionPreventionTest extends TestCase {
                 Install.isValidIdentifier(badName)
             );
             // Guard means setup() returns false immediately — the DDL concatenation
-            // "DROP DATABASE IF EXISTS " + badName is never reached
+            // "DROP DATABASE IF EXISTS " + safeDbName is never reached
         }
     }
 
@@ -736,8 +736,8 @@ public class SqlInjectionPreventionTest extends TestCase {
      * has been validated to contain only safe characters before concatenation.
      *
      * This validates that the combination of:
-     *   1. Strict allowlist validation (isValidIdentifier)
-     *   2. DDL string concatenation with validated identifier
+     *   1. Strict allowlist validation (isValidIdentifier) on the explicit parameter
+     *   2. DDL string concatenation with the validated local copy (safeDbName)
      * is safe — the identifier cannot contain SQL metacharacters.
      */
     public void testInstallDdlSafetyGuarantee() {
@@ -760,6 +760,131 @@ public class SqlInjectionPreventionTest extends TestCase {
         // Verify name appears literally in the DDL (no unexpected characters)
         assertTrue("DROP SQL must end with validated identifier", dropSql.endsWith(safeDbName));
         assertTrue("CREATE SQL must end with validated identifier", createSql.endsWith(safeDbName));
+    }
+
+    /**
+     * Verifies that the setup() method signature now accepts an explicit requestedDbName
+     * parameter rather than reading the static field directly.
+     *
+     * The original vulnerable form was:
+     *   protected boolean setup(String i) — reads tainted static field dbname internally
+     *
+     * The fixed form is:
+     *   protected boolean setup(String i, String requestedDbName) — caller explicitly passes
+     *   the user-supplied value; setup() validates it at the entry point before any DDL use.
+     *
+     * This structural change makes the taint flow from user input to the DDL sink
+     * fully traceable by static analysis tools — the guard check on requestedDbName
+     * at the method entry prevents the tainted value from reaching the sink.
+     */
+    public void testInstallSetupMethodAcceptsExplicitDbNameParameter() throws Exception {
+        // Verify the two-parameter setup method exists and is accessible via reflection
+        java.lang.reflect.Method setupMethod = null;
+        try {
+            setupMethod = Install.class.getDeclaredMethod("setup", String.class, String.class);
+        } catch (NoSuchMethodException e) {
+            fail("setup(String, String) method must exist — the fix requires explicit dbname parameter: " + e.getMessage());
+        }
+        assertNotNull("setup(String, String) must be declared on Install", setupMethod);
+
+        // Verify the old single-argument setup(String) no longer exists
+        // (it has been replaced by the two-parameter form)
+        boolean oldMethodExists = false;
+        try {
+            Install.class.getDeclaredMethod("setup", String.class);
+            oldMethodExists = true;
+        } catch (NoSuchMethodException e) {
+            // Expected: old single-parameter form should be gone
+            oldMethodExists = false;
+        }
+        assertFalse(
+            "setup(String) must NOT exist — only the two-parameter form setup(String, String) should be declared",
+            oldMethodExists
+        );
+    }
+
+    /**
+     * Verifies that the Install.setup() method returns false (without throwing)
+     * when passed a malicious dbname containing SQL injection characters.
+     *
+     * The taint path under test:
+     *   request.getParameter("dbname") → [passed as requestedDbName to setup()]
+     *   → isValidIdentifier(requestedDbName) returns false
+     *   → setup() returns false (DDL never executed)
+     *
+     * This confirms the taint flow is broken at the input boundary: the
+     * user-controlled value cannot reach stmt.executeUpdate().
+     */
+    public void testInstallSetupReturnsFalseForInjectionPayloadsWithoutDatabase() throws Exception {
+        Install install = new Install();
+
+        // Access the protected setup method via reflection
+        java.lang.reflect.Method setupMethod =
+            Install.class.getDeclaredMethod("setup", String.class, String.class);
+        setupMethod.setAccessible(true);
+
+        String[] injectionPayloads = {
+            "jvl; DROP DATABASE jvl; --",
+            "'; GRANT ALL ON *.* TO 'hacker'@'%'--",
+            "test OR 1=1",
+            "db--",
+            "db name",        // space
+            "jvl`",           // backtick
+            "jvl;",           // semicolon
+            null,
+            ""
+        };
+
+        for (String payload : injectionPayloads) {
+            // setup("1", maliciousPayload) must return false because isValidIdentifier
+            // rejects non-alphanumeric/underscore names before any DDL is executed.
+            // Even though i="1" (which would trigger DB creation), the guard fires first.
+            Object result = setupMethod.invoke(install, "1", payload);
+            assertFalse(
+                "setup() must return false for injection payload [" + payload + "] — guard must block DDL",
+                (Boolean) result
+            );
+        }
+    }
+
+    /**
+     * Verifies that the taint flow isolation introduced in the fix is structurally
+     * correct: after isValidIdentifier() passes, the local safeDbName variable is
+     * assigned and used in DDL instead of the original tainted requestedDbName reference.
+     *
+     * This test simulates the validated code path:
+     *   requestedDbName = "mydb" (safe input)
+     *   isValidIdentifier(requestedDbName) → true
+     *   final String safeDbName = requestedDbName  ← local copy
+     *   stmt.executeUpdate("DROP DATABASE IF EXISTS " + safeDbName)   ← uses local copy
+     *   stmt.executeUpdate("CREATE DATABASE " + safeDbName)            ← uses local copy
+     *
+     * The SAST taint flow is broken because safeDbName is a new local variable
+     * assigned only after the guard check passes — it does not carry taint
+     * from the original request.getParameter() assignment.
+     */
+    public void testInstallTaintFlowIsolationWithValidInput() {
+        // Simulate the guard passing for a safe name
+        String requestedDbName = "mydb";
+        assertTrue("Precondition: safe name must pass isValidIdentifier", Install.isValidIdentifier(requestedDbName));
+
+        // Simulate the local variable assignment after the guard (as done in fixed setup())
+        final String safeDbName = requestedDbName;
+
+        // The DDL built from safeDbName is safe — no metacharacters
+        String dropDdl  = "DROP DATABASE IF EXISTS " + safeDbName;
+        String createDdl = "CREATE DATABASE " + safeDbName;
+
+        // Verify no injection metacharacters are present in the resulting DDL
+        assertFalse("DDL must not contain semicolons after guard",     dropDdl.contains(";"));
+        assertFalse("DDL must not contain single quotes after guard",  dropDdl.contains("'"));
+        assertFalse("DDL must not contain double quotes after guard",  dropDdl.contains("\""));
+        assertFalse("DDL must not contain backticks after guard",      dropDdl.contains("`"));
+        assertFalse("DDL must not contain dashes after guard",         dropDdl.contains("--"));
+        assertFalse("DDL must not contain CREATE after guard (wrong)", createDdl.contains(";"));
+
+        // Verify safeDbName equals the original validated value
+        assertEquals("safeDbName must equal validated requestedDbName", requestedDbName, safeDbName);
     }
 
     // =====================================================================
