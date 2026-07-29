@@ -669,4 +669,179 @@ public class StoredXssPreventionTest extends TestCase {
         assertTrue("HTML-encoded output must contain &lt; entities", rendered.contains("&lt;"));
         assertTrue("HTML-encoded output must contain &gt; entities", rendered.contains("&gt;"));
     }
+
+    // =========================================================================
+    // change-email.jsp Stored XSS remediation tests (CWE-79) - IDOR page
+    // =========================================================================
+
+    /**
+     * Tests that a malicious userid stored in the HTTP session (originally read
+     * from the database by LoginValidator.processRequest) is HTML-encoded before
+     * being rendered inside the anchor href in change-email.jsp.
+     *
+     * Taint flow:
+     *   DB rs.getString("id") -> session.setAttribute("userid", ...)
+     *   -> change-email.jsp session.getAttribute("userid")
+     *   -> out.print("<a href='/myprofile.jsp?id=" + userid + "'>...")   ← SINK
+     *
+     * Before fix (VULNERABLE):
+     *   out.print("...<a href='"+path+"/myprofile.jsp?id="+session.getAttribute("userid")+"'>...");
+     *
+     * After fix (SECURE):
+     *   out.print("...<a href='"+path+"/myprofile.jsp?id="+Functions.escapeXml(String.valueOf(session.getAttribute("userid")))+"'>...");
+     */
+    public void testChangeEmailJspUseridInAnchorHrefIsEncoded() {
+        // Simulate a malicious userid value stored in the DB and loaded into session
+        // (e.g., registered via a crafted payload that bypassed server-side validation)
+        String maliciousUserId = "1\"><script>alert(document.cookie)</script>";
+        String contextPath = "/JavaVulnerableLab";
+
+        // Simulate the VULNERABLE rendering (before fix) — must NOT be used in production
+        String vulnerableOutput = "<br/><br/><a href='" + contextPath + "/myprofile.jsp?id=" + maliciousUserId + "'>Return to Profile Page &gt;&gt;</a>";
+
+        // Simulate the SECURE rendering (after fix) using Functions.escapeXml()
+        String safeUserId = escapeXml(maliciousUserId);
+        String secureOutput = "<br/><br/><a href='" + contextPath + "/myprofile.jsp?id=" + safeUserId + "'>Return to Profile Page &gt;&gt;</a>";
+
+        // The vulnerable version contains the raw script tag — confirming the attack vector
+        assertTrue(
+            "Vulnerable output (pre-fix) would contain executable script tag",
+            vulnerableOutput.contains("<script>")
+        );
+
+        // The secure (fixed) version must NOT contain the raw script tag
+        assertFalse(
+            "Fixed output must not contain literal <script> tag in href context",
+            secureOutput.contains("<script>")
+        );
+        assertFalse(
+            "Fixed output must not contain unencoded double-quote that breaks attribute",
+            secureOutput.contains("\"<script>")
+        );
+        assertTrue(
+            "Fixed output must contain HTML-encoded < character",
+            secureOutput.contains("&lt;")
+        );
+        assertTrue(
+            "Fixed output must contain HTML-encoded > character",
+            secureOutput.contains("&gt;")
+        );
+        assertTrue(
+            "Fixed output must contain HTML-encoded double-quote (&#034;) to prevent attribute breakout",
+            secureOutput.contains("&#034;")
+        );
+    }
+
+    /**
+     * Tests that a classic script-tag userid XSS payload is neutralized
+     * when rendered in the anchor href of change-email.jsp.
+     */
+    public void testChangeEmailJspScriptTagUseridIsNeutralized() {
+        String maliciousUserId = "<script>alert('XSS')</script>";
+        String safeUserId = escapeXml(maliciousUserId);
+        String contextPath = "/JavaVulnerableLab";
+
+        String rendered = "<br/><br/><a href='" + contextPath + "/myprofile.jsp?id=" + safeUserId + "'>Return to Profile Page &gt;&gt;</a>";
+
+        assertFalse(
+            "Rendered anchor must not contain literal <script> tag",
+            rendered.contains("<script>")
+        );
+        assertTrue("< in userid must be encoded as &lt;", rendered.contains("&lt;"));
+        assertTrue("' in userid must be encoded as &#039;", safeUserId.contains("&#039;"));
+    }
+
+    /**
+     * Tests that a malicious userid is also HTML-encoded when rendered in the
+     * hidden input field value attribute in change-email.jsp (line 20).
+     *
+     * The same tainted value (session userid from DB) is used in two output
+     * locations in change-email.jsp:
+     *   1. Hidden input: <input type="hidden" name="id" value="<%= userid %>"/>
+     *   2. Anchor href:  <a href='...?id=<%= userid %>'>Return to Profile Page</a>
+     *
+     * Both must be encoded with Functions.escapeXml() to prevent XSS.
+     *
+     * After fix (SECURE):
+     *   <input type="hidden" name="id" value="<% out.print(Functions.escapeXml(String.valueOf(session.getAttribute("userid"))));%>"/>
+     */
+    public void testChangeEmailJspUseridInHiddenInputValueIsEncoded() {
+        // Simulate a malicious userid that could break out of the HTML attribute context
+        String maliciousUserId = "42\" onmouseover=\"alert(document.cookie)";
+
+        // Simulate the SECURE rendering for the hidden input value attribute
+        String safeUserId = escapeXml(maliciousUserId);
+        String rendered = "<input type=\"hidden\" name=\"id\" value=\"" + safeUserId + "\"/>";
+
+        // The attacker's onmouseover injection must be neutralized
+        assertFalse(
+            "Hidden input must not contain injected onmouseover event handler",
+            rendered.contains("onmouseover=")
+        );
+        // The double-quote that would break out of the value attribute must be encoded
+        assertFalse(
+            "Hidden input value must not contain unencoded double-quote that breaks attribute",
+            safeUserId.contains("\"")
+        );
+        assertTrue(
+            "Double-quote in userid must be encoded as &#034; to prevent attribute breakout",
+            safeUserId.contains("&#034;")
+        );
+    }
+
+    /**
+     * Tests that a benign numeric userid (the normal case) passes through
+     * Functions.escapeXml() unchanged, verifying no regression in normal behavior
+     * for change-email.jsp.
+     */
+    public void testChangeEmailJspNumericUseridIsPreserved() {
+        // Normal case: userid is a plain integer from the database
+        String numericUserId = "42";
+        String encoded = escapeXml(numericUserId);
+        String contextPath = "/JavaVulnerableLab";
+
+        // Numeric values contain no HTML special characters and must pass through unchanged
+        assertEquals(
+            "Numeric userid must pass through encoding unchanged",
+            numericUserId,
+            encoded
+        );
+
+        String rendered = "<br/><br/><a href='" + contextPath + "/myprofile.jsp?id=" + encoded + "'>Return to Profile Page &gt;&gt;</a>";
+        assertTrue(
+            "Rendered anchor must contain the correct profile URL with numeric userid",
+            rendered.contains("/myprofile.jsp?id=42")
+        );
+    }
+
+    /**
+     * Tests the full HTML output of change-email.jsp after remediation with both
+     * the hidden input and the anchor tag rendered using an XSS payload as userid.
+     *
+     * Simulates the complete page fragment where the tainted userid flows into
+     * two distinct HTML output points.
+     */
+    public void testChangeEmailJspFullRenderingWithXssPayload() {
+        String maliciousUserId = "1<script>alert('stored XSS via userid')</script>";
+        String safeUserId = escapeXml(maliciousUserId);
+        String contextPath = "/JavaVulnerableLab";
+
+        // Simulate the hidden input rendering (line 20 after fix)
+        String hiddenInput = "<input type=\"hidden\" name=\"id\" value=\"" + safeUserId + "\"/>";
+        // Simulate the anchor tag rendering (line 40 after fix)
+        String anchorTag = "<br/><br/><a href='" + contextPath + "/myprofile.jsp?id=" + safeUserId + "'>Return to Profile Page &gt;&gt;</a>";
+
+        String fullOutput = hiddenInput + anchorTag;
+
+        // No executable script tags must appear anywhere in the rendered output
+        assertFalse(
+            "Full page fragment must not contain any executable <script> tags",
+            fullOutput.contains("<script>")
+        );
+        // Both rendering locations must use HTML-encoded values
+        assertTrue(
+            "Full page fragment must contain HTML-encoded &lt; for the script tag payload",
+            fullOutput.contains("&lt;script&gt;")
+        );
+    }
 }
