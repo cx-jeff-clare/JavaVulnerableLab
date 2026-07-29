@@ -8,9 +8,16 @@ package org.cysecurity.cspf.jvl.controller;
 
 import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.Set;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
@@ -43,24 +50,44 @@ public class AddPage extends HttpServlet {
            {
             String pagesDir=getServletContext().getRealPath("/pages");
             String filePath=pagesDir+"/"+fileName;
-            File f=new File(filePath);
-            if(f.exists())
+            // Use NIO Path for file creation with explicitly restrictive permissions (CWE-732).
+            // Files.createFile() with PosixFilePermissions sets owner-read/write only (0600),
+            // preventing other OS users from reading or writing the created file.
+            Path targetPath = Paths.get(filePath);
+            if(Files.exists(targetPath))
             {
-                f.delete();
+                Files.delete(targetPath);
             }
-                if(f.createNewFile())
-                {
-                    BufferedWriter bw=new BufferedWriter(new FileWriter(f.getAbsoluteFile()));
-                    bw.write(content);
-                    bw.close();
-                    // HTML-encode fileName before rendering to prevent Stored XSS (CWE-79)
-                    String safeFileName = Functions.escapeXml(fileName);
-                    out.print("Successfully created the file: <a href='../pages/"+safeFileName+"'>"+safeFileName+"</a>");
-                }
-                else
-                {
-                    out.print("Failed to create the file");
-                }
+            Path createdPath;
+            try {
+                // Attempt POSIX-aware creation with owner-only read/write permissions (rw-------)
+                Set<PosixFilePermission> ownerOnly = PosixFilePermissions.fromString("rw-------");
+                createdPath = Files.createFile(targetPath,
+                        PosixFilePermissions.asFileAttribute(ownerOnly));
+            } catch (UnsupportedOperationException e) {
+                // Non-POSIX filesystem (e.g., Windows): create file and restrict
+                // permissions explicitly to owner read/write, disabling world access.
+                createdPath = Files.createFile(targetPath);
+                File f = createdPath.toFile();
+                f.setReadable(false, false);
+                f.setWritable(false, false);
+                f.setReadable(true, true);
+                f.setWritable(true, true);
+            }
+            if(createdPath != null)
+            {
+                BufferedWriter bw = new BufferedWriter(
+                        new OutputStreamWriter(Files.newOutputStream(createdPath), StandardCharsets.UTF_8));
+                bw.write(content);
+                bw.close();
+                // HTML-encode fileName before rendering to prevent Stored XSS (CWE-79)
+                String safeFileName = Functions.escapeXml(fileName);
+                out.print("Successfully created the file: <a href='../pages/"+safeFileName+"'>"+safeFileName+"</a>");
+            }
+            else
+            {
+                out.print("Failed to create the file");
+            }
            }
            else
            {
