@@ -669,4 +669,221 @@ public class StoredXssPreventionTest extends TestCase {
         assertTrue("HTML-encoded output must contain &lt; entities", rendered.contains("&lt;"));
         assertTrue("HTML-encoded output must contain &gt; entities", rendered.contains("&gt;"));
     }
+
+    // =========================================================================
+    // change-email.jsp userid Stored XSS remediation tests (CWE-79)
+    // =========================================================================
+
+    /**
+     * Tests that a malicious userid stored in the database (and placed in the session
+     * by LoginValidator.processRequest) is HTML-encoded before being embedded in the
+     * hidden input field value in change-email.jsp.
+     *
+     * Taint flow: DB -> rs.getString("id") [LoginValidator.java:59]
+     *             -> session.setAttribute("userid", ...) [LoginValidator.java:59]
+     *             -> session.getAttribute("userid") [change-email.jsp:20]
+     *             -> out.print(Functions.escapeXml(...)) [change-email.jsp:20]  (FIXED)
+     *
+     * Before fix (VULNERABLE):
+     *   <input type="hidden" name="id" value="<% out.print(session.getAttribute("userid"));%>"/>
+     *
+     * After fix (SECURE):
+     *   <input type="hidden" name="id" value="<% out.print(Functions.escapeXml((String)session.getAttribute("userid")));%>"/>
+     *
+     * An attacker who registers with an id containing XSS markup (e.g., by manipulating
+     * the DB) would have that payload stored in the session and reflected back into the
+     * hidden field on every page load without encoding.
+     */
+    public void testChangeEmailHiddenFieldUseridXssPayload() {
+        // Simulates a malicious value stored in the DB and placed into the session
+        String maliciousUserId = "\"><script>alert('stored XSS via userid')</script>";
+
+        // Simulate the remediated hidden input rendering in change-email.jsp
+        String safeUserId = escapeXml(maliciousUserId);
+        String rendered = "<input type=\"hidden\" name=\"id\" value=\"" + safeUserId + "\"/>";
+
+        // The output must not allow breaking out of the attribute value context
+        assertFalse(
+            "Rendered hidden input must not allow attribute breakout via double-quote",
+            rendered.contains("\"><script>")
+        );
+        assertFalse(
+            "Rendered hidden input must not contain executable <script> tag",
+            rendered.contains("<script>")
+        );
+        // Double-quote must be encoded as &#034; to prevent attribute breakout
+        assertTrue(
+            "Double-quote in userid must be encoded as &#034;",
+            safeUserId.contains("&#034;")
+        );
+        assertTrue(
+            "< in userid must be encoded as &lt;",
+            safeUserId.contains("&lt;")
+        );
+    }
+
+    /**
+     * Tests that a script-tag userid payload stored in the database is neutralized
+     * when rendered in the hidden input field in change-email.jsp.
+     */
+    public void testChangeEmailHiddenFieldScriptTagUseridPayload() {
+        String maliciousUserId = "<script>document.cookie='hijacked='+document.cookie</script>";
+
+        String safeUserId = escapeXml(maliciousUserId);
+        String rendered = "<input type=\"hidden\" name=\"id\" value=\"" + safeUserId + "\"/>";
+
+        assertFalse(
+            "Rendered input must not contain executable <script> tag",
+            rendered.contains("<script>")
+        );
+        assertFalse(
+            "Rendered input must not contain literal </script> tag",
+            rendered.contains("</script>")
+        );
+        assertTrue("< in userid must be encoded", rendered.contains("&lt;"));
+        assertTrue("> in userid must be encoded", rendered.contains("&gt;"));
+    }
+
+    /**
+     * Tests that the userid used in the "Return to Profile Page" anchor link
+     * in change-email.jsp is also HTML-encoded, preventing injection into the
+     * href attribute context.
+     *
+     * Before fix (VULNERABLE):
+     *   out.print("...<a href='...?id="+session.getAttribute("userid")+"'>Return to Profile Page</a>");
+     *
+     * After fix (SECURE):
+     *   out.print("...<a href='...?id="+Functions.escapeXml((String)session.getAttribute("userid"))+"'>Return to Profile Page</a>");
+     *
+     * An attacker storing a userid like:
+     *   1' onmouseover='alert(1)
+     * would inject an event handler into the anchor tag without encoding.
+     */
+    public void testChangeEmailProfileLinkUseridEventHandlerInjection() {
+        // Attacker-controlled value stored in the DB, injecting a single-quote event handler
+        String maliciousUserId = "1' onmouseover='alert(document.cookie)";
+
+        String safeUserId = escapeXml(maliciousUserId);
+        String rendered = "<a href='/myprofile.jsp?id=" + safeUserId + "'>Return to Profile Page &gt;&gt;</a>";
+
+        assertFalse(
+            "Rendered profile link must not contain injected onmouseover handler",
+            rendered.contains("onmouseover=")
+        );
+        // Single-quote must be encoded as &#039; to prevent attribute breakout in the href
+        assertTrue(
+            "Single-quote in userid must be encoded as &#039;",
+            safeUserId.contains("&#039;")
+        );
+    }
+
+    /**
+     * Tests that a javascript: protocol injection via the userid in the profile
+     * link href is neutralized by HTML encoding.
+     */
+    public void testChangeEmailProfileLinkUseridJavascriptProtocolPayload() {
+        String maliciousUserId = "1\"><a href=\"javascript:alert(1)\">";
+
+        String safeUserId = escapeXml(maliciousUserId);
+        String rendered = "<a href='/myprofile.jsp?id=" + safeUserId + "'>Return to Profile Page &gt;&gt;</a>";
+
+        assertFalse(
+            "Rendered profile link must not contain injected javascript: protocol",
+            rendered.contains("javascript:alert(1)")
+        );
+        assertFalse(
+            "Rendered profile link must not contain unencoded double-quote allowing tag injection",
+            rendered.contains("\"><a href")
+        );
+        assertTrue("Double-quote in userid must be encoded as &#034;", safeUserId.contains("&#034;"));
+    }
+
+    /**
+     * Tests that a normal (non-malicious) numeric userid is preserved correctly
+     * through HTML encoding in change-email.jsp hidden field and profile link.
+     *
+     * Normal user IDs are numeric and should pass through encoding unchanged,
+     * ensuring no regression in core functionality.
+     */
+    public void testChangeEmailNormalNumericUseridIsPreserved() {
+        String normalUserId = "42";
+
+        String safeUserId = escapeXml(normalUserId);
+
+        // Numeric IDs have no HTML special characters, so they are unchanged
+        assertEquals(
+            "Normal numeric userid must pass through encoding unchanged",
+            normalUserId,
+            safeUserId
+        );
+
+        // Verify hidden field rendering
+        String hiddenField = "<input type=\"hidden\" name=\"id\" value=\"" + safeUserId + "\"/>";
+        assertTrue(
+            "Hidden field must contain the userid value",
+            hiddenField.contains("value=\"42\"")
+        );
+
+        // Verify profile link rendering
+        String profileLink = "<a href='/myprofile.jsp?id=" + safeUserId + "'>Return to Profile Page</a>";
+        assertTrue(
+            "Profile link must contain the userid value",
+            profileLink.contains("?id=42")
+        );
+    }
+
+    /**
+     * Tests that a null userid (e.g., session attribute not yet set) is handled
+     * gracefully by the encoding, producing an empty string without NullPointerException.
+     */
+    public void testChangeEmailNullUseridHandledGracefully() {
+        String nullUserId = null;
+        String safeUserId = escapeXml(nullUserId);
+
+        assertNotNull("Encoding null userid must return non-null", safeUserId);
+        assertEquals("Encoding null userid must return empty string", "", safeUserId);
+
+        // Verify the hidden field renders safely with an empty value
+        String hiddenField = "<input type=\"hidden\" name=\"id\" value=\"" + safeUserId + "\"/>";
+        assertFalse(
+            "Hidden field with null userid must not produce executable code",
+            hiddenField.contains("<script>")
+        );
+    }
+
+    /**
+     * Tests the complete rendering of change-email.jsp's form section with a
+     * stored XSS payload in the userid, simulating the full taint flow from
+     * LoginValidator.processRequest through to the JSP output.
+     *
+     * Taint source: rs.getString("id") stored in DB by malicious user
+     * Taint sink (fixed): out.print(Functions.escapeXml((String)session.getAttribute("userid")))
+     */
+    public void testChangeEmailFullFormRenderingWithStoredXssPayload() {
+        // Simulates a userid value crafted by an attacker who can write to the database
+        String dbUserId = "<img src=x onerror=alert(document.cookie)>";
+
+        // Simulate the full form rendering as it appears in the fixed change-email.jsp
+        String safeUserId = escapeXml(dbUserId);
+        StringBuilder formOutput = new StringBuilder();
+        formOutput.append("Enter the New Email:<br/><br/>");
+        formOutput.append("<form action=\"change-email.jsp\" method=\"POST\">");
+        formOutput.append("New Email ID: <input type=\"text\" name=\"email\" value=\"\"/>");
+        formOutput.append("<input type=\"hidden\" name=\"id\" value=\"").append(safeUserId).append("\"/>");
+        formOutput.append("<br/><br/><input type=\"submit\" name=\"change\" value=\"Change\"/>");
+        formOutput.append("</form>");
+        formOutput.append("<br/>");
+        // Simulate the profile link rendering
+        formOutput.append("<a href='/myprofile.jsp?id=").append(safeUserId).append("'>Return to Profile Page &gt;&gt;</a>");
+
+        String rendered = formOutput.toString();
+
+        // The complete rendered form must not contain executable HTML
+        assertFalse("Rendered form must not contain <img> tag", rendered.contains("<img"));
+        assertFalse("Rendered form must not contain onerror handler", rendered.contains("onerror="));
+
+        // Both occurrences of userid (hidden field and profile link) must be encoded
+        assertTrue("Rendered form must contain HTML-encoded < character", rendered.contains("&lt;"));
+        assertTrue("Rendered form must contain HTML-encoded > character", rendered.contains("&gt;"));
+    }
 }
