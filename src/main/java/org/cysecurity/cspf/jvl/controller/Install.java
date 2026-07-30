@@ -13,7 +13,7 @@ import java.io.PrintWriter;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
-import java.sql.Statement; 
+import java.sql.Statement;
 import java.util.Properties;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
@@ -55,7 +55,15 @@ public class Install extends HttpServlet {
         jdbcdriver = request.getParameter("jdbcdriver");
         dbuser = request.getParameter("dbuser");
         dbpass = request.getParameter("dbpass");
-        dbname = request.getParameter("dbname");
+        // Validate dbname as a safe SQL identifier (letters, digits, underscores only)
+        // to prevent SQL injection in DDL statements where JDBC parameterization
+        // cannot be used for identifier names (CREATE DATABASE, DROP DATABASE).
+        String rawDbname = request.getParameter("dbname");
+        if (rawDbname != null && rawDbname.matches("[A-Za-z][A-Za-z0-9_]{0,63}")) {
+            dbname = rawDbname;
+        } else {
+            dbname = null;
+        }
         siteTitle= request.getParameter("siteTitle");
         adminuser= request.getParameter("adminuser");
         adminpass= HashMe.hashMe(request.getParameter("adminpass"));
@@ -63,12 +71,13 @@ public class Install extends HttpServlet {
         //Moifying Configuration Properties:
          Properties config=new Properties();
          config.load(new FileInputStream(configPath));
-         config.setProperty("dburl",dburl);
-         config.setProperty("jdbcdriver",jdbcdriver);
-         config.setProperty("dbuser",dbuser);
-         config.setProperty("dbpass",dbpass);
-         config.setProperty("dbname",dbname);
-         config.setProperty("siteTitle",siteTitle);
+         config.setProperty("dburl",dburl != null ? dburl : "");
+         config.setProperty("jdbcdriver",jdbcdriver != null ? jdbcdriver : "");
+         config.setProperty("dbuser",dbuser != null ? dbuser : "");
+         config.setProperty("dbpass",dbpass != null ? dbpass : "");
+         // dbname is null when it failed identifier validation; store empty string
+         config.setProperty("dbname",dbname != null ? dbname : "");
+         config.setProperty("siteTitle",siteTitle != null ? siteTitle : "");
          FileOutputStream fileout = new FileOutputStream(configPath);
          config.store(fileout, null); 
          fileout.close();
@@ -102,20 +111,27 @@ public class Install extends HttpServlet {
     }
      protected boolean setup(String i) throws IOException
     {
-        
-       if(i.equals("1"))   
+        // Abort if dbname failed allowlist validation in processRequest
+        if (dbname == null) {
+            return false;
+        }
+
+       if(i.equals("1"))
        {
- 
+
                     try
                    {
                     Class.forName(jdbcdriver);
                     Connection con= DriverManager.getConnection(dburl,dbuser,dbpass);
                       if(con!=null && !con.isClosed())
                         {
-                            //Database creation
-                             Statement stmt = con.createStatement();  
+                            //Database creation — dbname has been allowlist-validated
+                            //in processRequest to contain only safe identifier characters
+                            //(letters, digits, underscores starting with a letter),
+                            //preventing SQL injection in these DDL statements.
+                             Statement stmt = con.createStatement();
                              stmt.executeUpdate("DROP DATABASE IF EXISTS "+dbname);
-                             
+
                              stmt.executeUpdate("CREATE DATABASE "+dbname);
                              con.close();
                             con= DriverManager.getConnection(dburl+dbname,dbuser,dbpass);
