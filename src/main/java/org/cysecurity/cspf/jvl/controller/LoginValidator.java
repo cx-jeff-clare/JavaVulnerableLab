@@ -87,6 +87,11 @@ public class LoginValidator extends HttpServlet {
     /**
      * Handles the HTTP <code>GET</code> method.
      *
+     * Login credentials must never be submitted via GET because query-string
+     * parameters (including the password) are recorded in server access logs,
+     * browser history, proxy logs, and Referer headers (CWE-598).
+     * Redirect to the login page so the user submits via POST instead.
+     *
      * @param request servlet request
      * @param response servlet response
      * @throws ServletException if a servlet-specific error occurs
@@ -95,7 +100,9 @@ public class LoginValidator extends HttpServlet {
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
-        processRequest(request, response);
+        // Credentials must not be accepted over GET (query string exposure).
+        // Redirect back to the login form so the browser issues a POST.
+        response.sendRedirect("login.jsp");
     }
 
     /**
