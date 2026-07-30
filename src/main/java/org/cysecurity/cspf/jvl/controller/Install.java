@@ -13,8 +13,9 @@ import java.io.PrintWriter;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
-import java.sql.Statement; 
+import java.sql.Statement;
 import java.util.Properties;
+import java.util.regex.Pattern;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
@@ -26,6 +27,14 @@ import org.cysecurity.cspf.jvl.model.HashMe;
  * @author breakthesec
  */
 public class Install extends HttpServlet {
+
+       /**
+        * Allowlist pattern for database names: only alphanumeric characters and
+        * underscores are permitted.  This prevents external control of the
+        * config-file setting (CWE-15) by rejecting any dbname that does not
+        * conform to a safe, well-defined set of characters.
+        */
+       private static final Pattern SAFE_DBNAME_PATTERN = Pattern.compile("^[A-Za-z0-9_]{1,64}$");
 
        static String dburl;
        static String jdbcdriver;
@@ -55,12 +64,23 @@ public class Install extends HttpServlet {
         jdbcdriver = request.getParameter("jdbcdriver");
         dbuser = request.getParameter("dbuser");
         dbpass = request.getParameter("dbpass");
-        dbname = request.getParameter("dbname");
+
+        // Validate dbname against an allowlist of safe characters (CWE-15 fix).
+        // Only alphanumeric characters and underscores are accepted; any other
+        // value is rejected before it can influence a system configuration setting.
+        String rawDbname = request.getParameter("dbname");
+        if (rawDbname == null || !SAFE_DBNAME_PATTERN.matcher(rawDbname).matches()) {
+            response.sendError(HttpServletResponse.SC_BAD_REQUEST,
+                    "Invalid database name: must contain only letters, digits, or underscores (max 64 characters).");
+            return;
+        }
+        dbname = rawDbname;
+
         siteTitle= request.getParameter("siteTitle");
         adminuser= request.getParameter("adminuser");
         adminpass= HashMe.hashMe(request.getParameter("adminpass"));
-        
-        //Moifying Configuration Properties:
+
+        //Modifying Configuration Properties:
          Properties config=new Properties();
          config.load(new FileInputStream(configPath));
          config.setProperty("dburl",dburl);
