@@ -3,12 +3,14 @@ package org.cysecurity.cspf.jvl.controller;
 import junit.framework.TestCase;
 
 import java.io.InputStream;
+import java.io.PrintWriter;
 import java.io.Reader;
 import java.math.BigDecimal;
 import java.net.URL;
 import java.sql.*;
 import java.util.Calendar;
 import java.util.Map;
+import javax.servlet.http.Cookie;
 
 /**
  * Tests for LoginValidator to verify SQL injection remediation.
@@ -528,5 +530,152 @@ public class LoginValidatorTest extends TestCase {
 
         assertEquals("Trimmed empty username must be bound as empty string", "", capturedParam1);
         assertEquals("Empty password must be bound as empty string", "", capturedParam2);
+    }
+
+    // =========================================================================
+    // CWE-598: Information Exposure Through Query String
+    //
+    // The following tests verify that GET requests to LoginValidator are
+    // rejected (redirected to the login page) and never process credentials,
+    // so that passwords are never exposed in a URL query string.
+    // =========================================================================
+
+    /**
+     * Minimal stub for HttpServletResponse that records redirect URLs and
+     * ignores all other response operations.  Only the methods exercised by
+     * the LoginValidator.doGet() path need real implementations.
+     */
+    static class StubHttpServletResponse implements javax.servlet.http.HttpServletResponse {
+        /** The last URL passed to sendRedirect(). */
+        String redirectedTo = null;
+        /** Whether sendRedirect() was called at all. */
+        boolean redirectCalled = false;
+
+        public void sendRedirect(String location) throws java.io.IOException {
+            redirectCalled = true;
+            redirectedTo   = location;
+        }
+
+        // --- Remaining HttpServletResponse / ServletResponse methods (unused) ---
+        public void addCookie(Cookie c)                              { /* no-op */ }
+        public boolean containsHeader(String name)                   { return false; }
+        public String encodeURL(String url)                          { return url; }
+        public String encodeRedirectURL(String url)                  { return url; }
+        public String encodeUrl(String url)                          { return url; }
+        public String encodeRedirectUrl(String url)                  { return url; }
+        public void sendError(int sc, String msg) throws java.io.IOException { /* no-op */ }
+        public void sendError(int sc)             throws java.io.IOException { /* no-op */ }
+        public void setDateHeader(String name, long date)            { /* no-op */ }
+        public void addDateHeader(String name, long date)            { /* no-op */ }
+        public void setHeader(String name, String value)             { /* no-op */ }
+        public void addHeader(String name, String value)             { /* no-op */ }
+        public void setIntHeader(String name, int value)             { /* no-op */ }
+        public void addIntHeader(String name, int value)             { /* no-op */ }
+        public void setStatus(int sc)                                { /* no-op */ }
+        public void setStatus(int sc, String sm)                     { /* no-op */ }
+        public String getCharacterEncoding()                         { return "UTF-8"; }
+        public String getContentType()                               { return null; }
+        public javax.servlet.ServletOutputStream getOutputStream() throws java.io.IOException { throw new UnsupportedOperationException(); }
+        public PrintWriter getWriter()               throws java.io.IOException { throw new UnsupportedOperationException(); }
+        public void setCharacterEncoding(String charset)             { /* no-op */ }
+        public void setContentLength(int len)                        { /* no-op */ }
+        public void setContentType(String type)                      { /* no-op */ }
+        public void setBufferSize(int size)                          { /* no-op */ }
+        public int  getBufferSize()                                  { return 0; }
+        public void flushBuffer()                    throws java.io.IOException { /* no-op */ }
+        public void resetBuffer()                                    { /* no-op */ }
+        public boolean isCommitted()                                 { return false; }
+        public void reset()                                          { /* no-op */ }
+        public void setLocale(java.util.Locale loc)                  { /* no-op */ }
+        public java.util.Locale getLocale()                          { return java.util.Locale.getDefault(); }
+    }
+
+    /**
+     * Verifies that a GET request to LoginValidator is redirected to the
+     * login page.  The redirect must occur so that password parameters
+     * supplied in the query string are never processed (CWE-598).
+     */
+    public void testGetRequestIsRedirectedAndDoesNotProcessCredentials()
+            throws Exception {
+        LoginValidator servlet = new LoginValidator();
+        StubHttpServletResponse response = new StubHttpServletResponse();
+
+        // doGet() in the fixed code redirects unconditionally and ignores the
+        // request, so we can safely pass null for the request.
+        java.lang.reflect.Method doGet = LoginValidator.class.getDeclaredMethod(
+                "doGet",
+                javax.servlet.http.HttpServletRequest.class,
+                javax.servlet.http.HttpServletResponse.class);
+        doGet.setAccessible(true);
+        doGet.invoke(servlet, null, response);
+
+        assertTrue("doGet() must call sendRedirect() to reject GET-based credential submission",
+                response.redirectCalled);
+        assertNotNull("Redirect target must not be null", response.redirectedTo);
+        assertFalse("Redirect target must not be empty", response.redirectedTo.isEmpty());
+        // The redirect must point to the login page, not to any credential-processing endpoint
+        assertTrue("Redirect target must point to login page",
+                response.redirectedTo.contains("login.jsp"));
+    }
+
+    /**
+     * Verifies that the redirect URL in doGet() does NOT contain credential
+     * parameter names, ensuring that the password is not forwarded anywhere.
+     */
+    public void testGetRequestRedirectDoesNotForwardPassword() throws Exception {
+        LoginValidator servlet = new LoginValidator();
+        StubHttpServletResponse response = new StubHttpServletResponse();
+
+        java.lang.reflect.Method doGet = LoginValidator.class.getDeclaredMethod(
+                "doGet",
+                javax.servlet.http.HttpServletRequest.class,
+                javax.servlet.http.HttpServletResponse.class);
+        doGet.setAccessible(true);
+        doGet.invoke(servlet, null, response);
+
+        // The redirect URL must not carry password or username query parameters
+        String location = response.redirectedTo;
+        assertNotNull("Redirect location must be set", location);
+        assertFalse("Redirect URL must not contain 'password' parameter",
+                location.toLowerCase(java.util.Locale.ROOT).contains("password"));
+        assertFalse("Redirect URL must not contain 'pass=' parameter",
+                location.toLowerCase(java.util.Locale.ROOT).contains("pass="));
+        assertFalse("Redirect URL must not contain 'username=' parameter",
+                location.toLowerCase(java.util.Locale.ROOT).contains("username="));
+    }
+
+    /**
+     * Verifies that doPost() still delegates to processRequest() so that
+     * legitimate POST-based logins continue to work after the GET restriction
+     * was added.  Without a servlet container, processRequest() will throw a
+     * NullPointerException when accessing the null request — this is expected
+     * and confirms that processRequest() was entered (not the GET redirect).
+     */
+    public void testPostRequestIsNotRedirectedToLoginPage() throws Exception {
+        LoginValidator servlet  = new LoginValidator();
+        StubHttpServletResponse response = new StubHttpServletResponse();
+
+        java.lang.reflect.Method doPost = LoginValidator.class.getDeclaredMethod(
+                "doPost",
+                javax.servlet.http.HttpServletRequest.class,
+                javax.servlet.http.HttpServletResponse.class);
+        doPost.setAccessible(true);
+
+        try {
+            doPost.invoke(servlet, null, response);
+        } catch (java.lang.reflect.InvocationTargetException ite) {
+            // Expected path: processRequest() is entered and throws a
+            // NullPointerException because there is no real servlet context.
+            // This confirms doPost() did NOT issue the GET-guard redirect.
+            Throwable cause = ite.getCause();
+            assertTrue("doPost() should throw NullPointerException when request is null "
+                    + "(confirms processRequest() was entered, not the GET guard)",
+                    cause instanceof NullPointerException);
+        }
+
+        // After a POST, the response must NOT have been redirected to login.jsp
+        // by the GET guard (doPost never sets redirectedTo to "login.jsp").
+        assertFalse("doPost() must not redirect to login.jsp — that redirect is GET-only",
+                "login.jsp".equals(response.redirectedTo));
     }
 }
