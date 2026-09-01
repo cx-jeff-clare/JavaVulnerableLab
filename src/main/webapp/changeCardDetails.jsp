@@ -1,6 +1,6 @@
  <%@ include file="/header.jsp" %>
  <%@page import="java.sql.Connection"%>
-<%@page import="java.sql.Statement"%>
+<%@page import="java.sql.PreparedStatement"%>
 <%@page import="java.sql.SQLException"%>
 
 <%@page import="java.sql.ResultSetMetaData"%>
@@ -25,23 +25,32 @@ if(session.getAttribute("isLoggedIn")!=null)
 		<br/>
     <%
  Connection con=new DBConnect().connect(getServletContext().getRealPath("/WEB-INF/config.properties"));
-   
-   String id=session.getAttribute("userid").toString();    //Gets User ID  
+
+   String id=session.getAttribute("userid").toString();    //Gets User ID
    String action=request.getParameter("action");
    try
    {
 
     if(action!=null && action.equalsIgnoreCase("add") )
     {
-        
+
         String cardno=request.getParameter("cardno");
         String cvv=request.getParameter("cvv");
         String expirydate=request.getParameter("expirydate");
         if(!cardno.equals("") && !cvv.equals("") && !expirydate.equals(""))
         {
-         Statement stmt = con.createStatement();
-         stmt.executeUpdate("INSERT into cards(id,cardno, cvv,expirydate) values ('"+id+"','"+cardno+"','"+cvv+"','"+expirydate+"')");
-         out.print("<b style='color:green'> * Card details added *</b>");   
+         // Use PreparedStatement with parameterized query to prevent Second-Order SQL Injection (CWE-89).
+         // The session "id" originates from DB data written at login (adminlogin.jsp) and is therefore
+         // an untrusted, second-order input. Binding all values as typed parameters ensures no SQL
+         // meta-characters in any of these values can alter the query structure.
+         PreparedStatement stmt = con.prepareStatement(
+             "INSERT INTO cards(id, cardno, cvv, expirydate) VALUES (?, ?, ?, ?)");
+         stmt.setString(1, id);
+         stmt.setString(2, cardno);
+         stmt.setString(3, cvv);
+         stmt.setString(4, expirydate);
+         stmt.executeUpdate();
+         out.print("<b style='color:green'> * Card details added *</b>");
         }
         else
         {
