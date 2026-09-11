@@ -1,6 +1,7 @@
  <%@page import="java.io.FileInputStream"%>
 <%@page import="java.util.Properties"%>
 <%@page import="java.io.File"%>
+<%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%
    String path = request.getContextPath();
    String configPath=getServletContext().getRealPath("/WEB-INF/config.properties");
@@ -145,7 +146,7 @@
                                     {
                                        out.print("<li><a href='"+path+"/admin/admin.jsp'>Admin Panel</a></li>"); 
                                     }
-                                    out.print("<li><a href='"+path+"/myprofile.jsp?id="+session.getAttribute("userid")+"'>My Profile</a></li>");
+                                    %><li><a href='<%=path%>/myprofile.jsp?id=<c:out value="${sessionScope.userid}"/>'>My Profile</a></li><%
                                      out.print("<li><a href='"+path+"/Logout'>Logout</a></li>");
                                 }
                                 else
