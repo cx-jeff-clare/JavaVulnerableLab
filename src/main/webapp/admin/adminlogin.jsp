@@ -1,4 +1,5 @@
  <%@page import="org.cysecurity.cspf.jvl.model.HashMe"%>
+<%@page import="java.sql.PreparedStatement"%>
 <%@page import="java.sql.Statement"%>
 <%@page import="java.sql.ResultSet"%>
 <%@page import="java.sql.SQLException"%>
@@ -15,8 +16,11 @@ if(request.getParameter("Login")!=null)
                     if(con!=null && !con.isClosed())
                                {
                                    ResultSet rs=null;
-                                   Statement stmt = con.createStatement();  
-                                   rs=stmt.executeQuery("select * from users where username='"+user+"' and password='"+pass+"' and privilege='admin'");
+                                   // Use PreparedStatement with parameterized query to prevent SQL Injection
+                                   PreparedStatement stmt = con.prepareStatement("select * from users where username=? and password=? and privilege='admin'");
+                                   stmt.setString(1, user);
+                                   stmt.setString(2, pass);
+                                   rs=stmt.executeQuery();
                                    if(rs != null && rs.next()){
                                    session.setAttribute("isLoggedIn", "1");
                                    session.setAttribute("userid", rs.getString("id"));
