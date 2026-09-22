@@ -1,6 +1,7 @@
  <%@page import="java.io.FileInputStream"%>
 <%@page import="java.util.Properties"%>
 <%@page import="java.io.File"%>
+<%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
 <%
    String path = request.getContextPath();
    String configPath=getServletContext().getRealPath("/WEB-INF/config.properties");
@@ -84,7 +85,7 @@
 					</li>
 					<li><a href="#">A4-Insecure Direct Object References</a>
 					<ul>
-                                            <li><a href="<%=path%>/myprofile.jsp?id=<% if(session.getAttribute("userid")!=null){ out.print(session.getAttribute("userid"));} %>" title="Make sure you have logged in ">Viewing Details</a>
+                                            <li><a href="<%=path%>/myprofile.jsp?id=<c:out value="${sessionScope.userid}"/>" title="Make sure you have logged in ">Viewing Details</a>
 						</li>
 						<li><a href="<%=path%>/vulnerability/idor/change-email.jsp" title="Make sure you have logged in ">Modifying email ID</a>
 						</li>
@@ -145,7 +146,8 @@
                                     {
                                        out.print("<li><a href='"+path+"/admin/admin.jsp'>Admin Panel</a></li>"); 
                                     }
-                                    out.print("<li><a href='"+path+"/myprofile.jsp?id="+session.getAttribute("userid")+"'>My Profile</a></li>");
+                                    /* userid comes from the database; render via c:out to prevent stored XSS */
+                                    %><li><a href='<%=path%>/myprofile.jsp?id=<c:out value="${sessionScope.userid}"/>'>My Profile</a></li><%
                                      out.print("<li><a href='"+path+"/Logout'>Logout</a></li>");
                                 }
                                 else
