@@ -1,8 +1,11 @@
- <%@ include file="header.jsp" %>
+ <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
+<%@ include file="header.jsp" %>
  <%
  if(session.getAttribute("user")!=null)
 {
-    out.print("Hello "+session.getAttribute("user")+",");
+ %>
+    Hello <c:out value="${sessionScope.user}"/>,
+ <%
 }
  %>
  Welcome to Java Vulnerable Lab !<br/><br/>
