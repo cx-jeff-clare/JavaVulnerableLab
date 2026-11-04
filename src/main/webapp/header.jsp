@@ -1,4 +1,5 @@
- <%@page import="java.io.FileInputStream"%>
+<%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
+<%@page import="java.io.FileInputStream"%>
 <%@page import="java.util.Properties"%>
 <%@page import="java.io.File"%>
 <%
@@ -84,7 +85,7 @@
 					</li>
 					<li><a href="#">A4-Insecure Direct Object References</a>
 					<ul>
-                                            <li><a href="<%=path%>/myprofile.jsp?id=<% if(session.getAttribute("userid")!=null){ out.print(session.getAttribute("userid"));} %>" title="Make sure you have logged in ">Viewing Details</a>
+                                            <li><a href="<%=path%>/myprofile.jsp?id=<c:out value="${sessionScope.userid}"/>" title="Make sure you have logged in ">Viewing Details</a>
 						</li>
 						<li><a href="<%=path%>/vulnerability/idor/change-email.jsp" title="Make sure you have logged in ">Modifying email ID</a>
 						</li>
