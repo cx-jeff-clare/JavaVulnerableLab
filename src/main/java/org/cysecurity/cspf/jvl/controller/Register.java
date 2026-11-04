@@ -9,6 +9,7 @@ package org.cysecurity.cspf.jvl.controller;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -56,7 +57,9 @@ public class Register extends HttpServlet {
                                   
                                    Statement stmt = con.createStatement();  
                                   stmt.executeUpdate("INSERT into users(username, password, email, About,avatar,privilege,secretquestion,secret) values ('"+user+"','"+pass+"','"+email+"','"+about+"','default.jpg','user',1,'"+secret+"')");
-                                       stmt.executeUpdate("INSERT into UserMessages(recipient, sender, subject, msg) values ('"+user+"','admin','Hi','Hi<br/> This is admin of this page. <br/> Welcome to Our Forum')");
+                                  PreparedStatement msgStmt = con.prepareStatement("INSERT into UserMessages(recipient, sender, subject, msg) values (?,'admin','Hi','Hi<br/> This is admin of this page. <br/> Welcome to Our Forum')");
+                                  msgStmt.setString(1, user);
+                                  msgStmt.executeUpdate();
              
                                     response.sendRedirect("index.jsp");
                                     
