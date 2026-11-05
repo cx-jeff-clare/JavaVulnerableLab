@@ -19,6 +19,7 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
 import org.cysecurity.cspf.jvl.model.HashMe;
 
 /**
@@ -49,7 +50,17 @@ public class Install extends HttpServlet {
     protected void processRequest(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
         String configPath=getServletContext().getRealPath("/WEB-INF/config.properties");
-        
+
+        //Authentication: once the application is installed, the destructive setup
+        //(DROP DATABASE / config rewrite) is only available to an authenticated admin session.
+        //The very first installation has no admin yet, so it is allowed until the
+        //installed marker has been written to the configuration.
+        if(isInstalled(configPath) && !isAdminSession(request))
+        {
+            response.sendError(HttpServletResponse.SC_FORBIDDEN, "Authentication required");
+            return;
+        }
+
         //Getting Database Configuration from User Input
         dburl = request.getParameter("dburl");
         jdbcdriver = request.getParameter("jdbcdriver");
@@ -86,6 +97,7 @@ public class Install extends HttpServlet {
             out.println("<body>");
             if(setup(i))
             {
+                markInstalled(configPath);
                 out.print("successfully installed");
             }
             else
@@ -100,6 +112,45 @@ public class Install extends HttpServlet {
              
          }
     }
+    /**
+     * Returns true only if the current server-side session belongs to an authenticated admin.
+     */
+    private boolean isAdminSession(HttpServletRequest request)
+    {
+        HttpSession session=request.getSession(false);
+        return session!=null && "admin".equals(session.getAttribute("privilege"));
+    }
+
+    /**
+     * Returns true if a previous setup completed successfully (marker stored in config).
+     */
+    private boolean isInstalled(String configPath) throws IOException
+    {
+        Properties config=new Properties();
+        try(FileInputStream in=new FileInputStream(configPath))
+        {
+            config.load(in);
+        }
+        return "true".equals(config.getProperty("installed"));
+    }
+
+    /**
+     * Persists the installed marker so that later setup attempts require an admin session.
+     */
+    private void markInstalled(String configPath) throws IOException
+    {
+        Properties config=new Properties();
+        try(FileInputStream in=new FileInputStream(configPath))
+        {
+            config.load(in);
+        }
+        config.setProperty("installed","true");
+        try(FileOutputStream fileout=new FileOutputStream(configPath))
+        {
+            config.store(fileout, null);
+        }
+    }
+
      protected boolean setup(String i) throws IOException
     {
         
