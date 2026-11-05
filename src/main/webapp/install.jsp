@@ -5,6 +5,7 @@
  
 <form action="Install" method="POST">
 <table> 
+    <tr><td>Setup Token:</td> <td><input type="password" name="installToken" autocomplete="off"/></td></tr>
     <tr><td>Website Title:</td> <td><input type="text" name="siteTitle" value="Java Vulnerable Lab"/></td></tr>
     <tr><td>Database Name:</td> <td><input type="text" name="dbname" value="abc"/></td></tr>
     <tr><td>Database User:</td> <td><input type="text" name="dbuser" value="root"/></td></tr>
