@@ -10,6 +10,8 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -19,6 +21,7 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
 import org.cysecurity.cspf.jvl.model.HashMe;
 
 /**
@@ -48,6 +51,14 @@ public class Install extends HttpServlet {
    
     protected void processRequest(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
+        // The installer rewrites the configuration and drops/creates databases,
+        // so it must only be reachable by an authenticated administrator or by
+        // someone holding the deployment-provided setup token.
+        if(!isAuthorized(request))
+        {
+            response.sendError(HttpServletResponse.SC_FORBIDDEN);
+            return;
+        }
         String configPath=getServletContext().getRealPath("/WEB-INF/config.properties");
         
         //Getting Database Configuration from User Input
@@ -100,6 +111,44 @@ public class Install extends HttpServlet {
              
          }
     }
+
+    /**
+     * Name of the environment variable holding the one-time setup token.
+     */
+    static final String INSTALL_TOKEN_ENV = "JVL_INSTALL_TOKEN";
+
+    /**
+     * Returns the setup token configured for this deployment, or null if none.
+     */
+    protected String getInstallToken()
+    {
+        return System.getenv(INSTALL_TOKEN_ENV);
+    }
+
+    /**
+     * Allows the request only for a logged in administrator session, or when the
+     * request carries the configured setup token (compared in constant time).
+     * If no token is configured, token based access is disabled.
+     */
+    protected boolean isAuthorized(HttpServletRequest request)
+    {
+        HttpSession session = request.getSession(false);
+        if(session != null
+                && "1".equals(session.getAttribute("isLoggedIn"))
+                && "admin".equals(session.getAttribute("privilege")))
+        {
+            return true;
+        }
+        String expected = getInstallToken();
+        String supplied = request.getParameter("installToken");
+        if(expected == null || expected.isEmpty() || supplied == null)
+        {
+            return false;
+        }
+        return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8),
+                supplied.getBytes(StandardCharsets.UTF_8));
+    }
+
      protected boolean setup(String i) throws IOException
     {
         
