@@ -5,6 +5,9 @@ services:
     build: 
         dockerfile: ./Dockerfile
         context: ./
+    environment:
+      # Token required by the installer page (install.jsp); set it before running docker-compose
+      JVL_INSTALL_TOKEN: "${JVL_INSTALL_TOKEN:-}"
     ports:
       - 8080:8080
     links: 
